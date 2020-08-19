@@ -6,6 +6,8 @@ library(readr)
 
 # setup
 
+experiment = "exp0_target_designation"
+
 parsed_trials <- read_csv("data/parsed_trials.csv")
 parsed_trials <- parsed_trials %>%
   mutate(answer = dot <= 4,
@@ -94,17 +96,44 @@ spring_sigma_w_grid %>%
   ggtitle("Human Effort across parameters")
 dev.off()
 
-model_data <- read_csv("data/exp0_td_entropy/performance_compute_attention.csv") %>%
+model_data <- read_csv(paste("data", experiment, "performance_compute.csv", sep = "/")) %>%
   rename(accuracy = performance) %>%
   select(-contains("dot"))
 model_data$scene <- 0:(nrow(model_data) - 1)
 
+model_data %>%
+  ggplot(aes(compute)) +
+  geom_histogram()
+
 full_data <- merge(across_subjects, model_data) %>%
-  mutate(log_compute = log(compute + 0.1))
+  mutate(log_compute = scale(compute)) #log(compute + 0.1))
 
 
 
 # Human to Human
+
+per_subject_data <- good_subjects_data %>%
+  group_by(ID) %>%
+  summarise(avg_acc = mean(correct),
+            avg_rating = mean(Rating),
+            n = n(),
+            se = sd(correct)/sqrt(n)) %>%
+  ungroup() %>%
+  mutate(z_avg_rating = scale(avg_rating))
+
+per_subject_diff <- with(per_subject_data,
+                         lm_robust(z_avg_rating ~ avg_acc))
+
+print(summary(per_subject_diff))
+per_subject_data %>%
+  ggplot(aes(x = z_avg_rating, y = avg_acc)) +
+  geom_point(size = 5) +
+  stat_smooth(method = "lm_robust") +
+  ggtitle("Human Accuracy vs Human Effort",
+          subtitle =TeX(sprintf("$R^2=%0.2f$",per_subject_diff$r.squared)))
+ggsave("output/per_subject_acc_to_effort.png")
+
+
 
 human_acc_to_human_diff <- with(full_data, 
                                lm_robust(avg_z_rating ~ avg_acc))
@@ -243,6 +272,11 @@ print(summary(res_2sls_fit))
 sink()
 
 
+some_fit <- with(full_data,
+                 lm_robust(avg_z_rating ~ accuracy + log_compute))
+print(summary(some_fit))
+
+
 png("output/res_model_compute_to_human_diff.png", width = 805, height = 600)
 res_data %>%
   ggplot(aes(x = res_log_compute, y = res_avg_z_rating)) +
@@ -287,6 +321,10 @@ full_data %>%
   labs(fill = "Log Model Compute") +
   ggtitle("Model Compute across parameters")
 dev.off()
+
+
+############################################################
+
 
 # Bar plot across models
 model_data <- model_data %>%
