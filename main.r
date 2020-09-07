@@ -289,6 +289,10 @@ res_data %>%
 #           subtitle =TeX(sprintf("$R^2=%0.2f$",res_2sls_fit$r.squared)))
 dev.off()
 
+full_data %>%
+  mutate(acc_diff = abs(accuracy - avg_acc)) %>%
+  top_n(10, acc_diff)
+
 
 # Model Specific analysis
 

@@ -35,59 +35,29 @@ across_subjects <-good_subjects_data %>%
             n = n(),
             se = sd(correct)/sqrt(n))
 
-attention_df <- read_csv("data/attention.csv") %>%
+attention_full <- read_csv("data/attention.csv") %>%
   mutate(frame = t * 4) %>%
-  filter(between(frame, 20, 100))
+  filter(between(frame, 0, 120)) %>%
+  select(-t)
 
-euc.dist <- function(x) sqrt(sum((x) ^ 2))
-
-attention_full <- attention_df %>%
+full_data <- attention_full %>%
   pivot_longer(-c(frame, trial), names_to = "tracker", 
-               values_to = "diff") %>%
+               values_to = "att") %>%
   group_by(trial, frame) %>%
-  summarise(l2diff = euc.dist(diff),
-            difvar = sd(diff)) %>%
-  left_join(attention_df)  %>%
+  summarise(total_att = sum(att))%>%
+  left_join(attention_full) %>%
   mutate(scene = trial - 1)
 
-
-
-att_sum <- attention_full %>%
-  group_by(scene) %>%
-  summarise(diff = max(l2diff))
-
-full_data <- left_join(across_subjects, att_sum)
-
-# Lets take a look at Attention differences across scenes
-
-full_data %>%
-  ggplot(aes(x = spring, y = sigma_w, fill = diff)) +
-  geom_tile() +
-  labs(fill = "Max att diff.") + 
-  scale_fill_gradient(low = "#0072B2", high = "white") +
-  ggtitle("Attention difference across parameters")
-
-full_data %>%
-  ggplot(aes(x = spring, y = sigma_w, fill = avg_acc)) +
-  geom_tile() +
-  labs(fill = "Avg Acc") + 
-  scale_fill_gradient(high = "#0072B2", low = "white") +
-  ggtitle("Human Acc. across parameters")
-
-full_data %>%
-  ggplot(aes(x = spring, y = sigma_w, fill = avg_z_rating)) +
-  geom_tile() +
-  labs(fill = "Scaled effort") + 
-  scale_fill_gradient(low = "#0072B2", high = "white") +
-  ggtitle("Human Effort across parameters")
 
 # Now lets look at the top 10 most different scenes
 
 top_trials <- full_data %>%
-  top_n(10, diff) %>%
+  group_by(scene) %>%
+  summarise(total_att = sum(total_att)) %>%
+  top_n(10, total_att) %>%
   select(scene)
 
-top_att <- attention_full %>%
+top_att <- full_data %>%
   filter(scene %in% top_trials$scene) %>% 
   ungroup()
 
@@ -121,7 +91,7 @@ dc_points <- top_att %>%
   separate(tracker, c(NA, "tracker"), "_") %>%
   mutate(tracker = as.numeric(tracker)) %>%
   rename(dc_t = frame, dc_diff = diff, dc_tracker = tracker)
-  
+
 time_points <- left_join(td_points, dc_points)
 write.csv(time_points, row.names = FALSE, 
           file = "output/attention_trial_tps.csv")
