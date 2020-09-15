@@ -27,8 +27,9 @@ full_data <- attention_full %>%
 top_trials <- full_data %>%
   group_by(scene) %>%
   summarise(total_att = sum(total_att_t),
-            max_att = max(max_att_t)) %>%
-  top_n(20, max_att) %>%
+            max_att = max(max_att_t),
+            var_total_att = sd(total_att_t)) %>%
+  top_n(20, var_total_att) %>%
   select(scene)
 
 top_att <- full_data %>%
@@ -36,33 +37,18 @@ top_att <- full_data %>%
   ungroup()
 
 top_att %>%
-  select(scene, frame, starts_with("tracker")) %>%
-  pivot_longer(-c(frame, scene), names_to = "tracker", 
-               values_to = "att") %>%
-  ggplot(aes(frame, tracker)) + 
-  geom_tile(aes(fill = att)) + 
-  scale_fill_gradient2(low = muted("blue"), 
-                       high = muted("red")) + 
-facet_wrap(vars(scene))
-ggsave("output/attention_trial_tps.png")
+  ggplot(aes(x = frame, y = total_att_t)) + 
+  geom_col() + 
+  facet_wrap(vars(scene))
+ggsave("output/compute_trial_tps.png")
 
-tps <- top_att %>%
-  select(scene, frame, starts_with("tracker")) %>%
-  pivot_longer(-c(frame, scene), names_to = "tracker", 
-               values_to = "att") %>%
-  group_by(scene)
+max_att <- top_att %>%
+  group_by(scene) %>%
+  slice(which.max(total_att_t))
 
-max_att <- tps %>%
-  slice(which.max(att)) %>%
-  separate(tracker, c(NA, "tracker"), "_") %>%
-  mutate(tracker = as.numeric(tracker))
-
-
-
-min_att <- tps %>%
-  slice(which.min(att)) %>%
-  separate(tracker, c(NA, "tracker"), "_") %>%
-  mutate(tracker = as.numeric(tracker))
+min_att <- top_att %>%
+  group_by(scene) %>%
+  slice(which.min(total_att_t))
 
 time_points <- full_join(max_att, min_att) %>%
   arrange(scene)
@@ -80,5 +66,5 @@ shuffled_tps <- time_points %>%
   ungroup()
   
 write.csv(shuffled_tps, row.names = FALSE, 
-          file = "output/attention_trial_tps.csv")
+          file = "output/compute_trial_tps.csv")
 
