@@ -8,18 +8,17 @@ th <- theme_classic()
 theme_set(th)
 
 attention_full <- read_csv("data/attention.csv") %>%
-  mutate(frame = t - 1) %>%
-  filter(between(frame, 12, 108)) %>%
-  select(-t)
+  rename(frame = t,
+         scene = trial) %>%
+  filter(between(frame, 24, 108))
 
 full_data <- attention_full %>%
-  pivot_longer(-c(frame, trial), names_to = "tracker", 
+  pivot_longer(-c(frame, scene), names_to = "tracker", 
                values_to = "att") %>%
-  group_by(trial, frame) %>%
+  group_by(scene, frame) %>%
   summarise(total_att_t = sum(att),
             max_att_t = max(att))%>%
-  left_join(attention_full) %>%
-  mutate(scene = trial - 1)
+  left_join(attention_full)
 
 
 # Now lets look at the top 10 most different scenes
