@@ -108,7 +108,10 @@ model_data %>%
 full_data <- merge(across_subjects, model_data) %>%
   mutate(log_compute = scale(compute)) #log(compute + 0.1))
 
-
+full_data %>% 
+  mutate(acc_diff = accuracy - avg_acc, abs_acc_diff = abs(acc_diff)) %>%
+  top_n(10, abs_acc_diff) %>%
+  select(trial, avg_acc, accuracy, acc_diff)
 
 # Human to Human
 
@@ -291,7 +294,8 @@ dev.off()
 
 full_data %>%
   mutate(acc_diff = abs(accuracy - avg_acc)) %>%
-  top_n(10, acc_diff)
+  top_n(10, acc_diff) %>%
+  arrange(acc_diff)
 
 
 # Model Specific analysis
