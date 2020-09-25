@@ -1,6 +1,8 @@
 ---
 title: "Exp 1"
-output: html_notebook
+output:
+  html_document:
+    df_print: paged
 ---
 
 # Setup
@@ -22,10 +24,19 @@ load data (subject, exp, scenes)
 ```{r}
 # when running debug trials
 subject_data <- read_csv("data/parsed_trials.csv") %>%
-  separate(TrialName, c("trial", NA)) %>%
-  mutate(trial = as.numeric(trial),
-         is_target = TRUE,
-         correct_td = TRUE)
+  separate(TrialName, c("scene", "tracker", NA, "epoch", "probe_gt", "target_gt")) %>%
+  mutate(scene = as.numeric(scene),
+         tracker = as.numeric(tracker),
+         epoch = as.numeric(epoch),
+         target_gt = case_when(target_gt=="trg" ~ TRUE,
+                               target_gt=="dis" ~ FALSE),
+         probe_gt = case_when(probe_gt =="probe" ~ TRUE,
+                              probe_gt=="noprobe" ~ FALSE),)
+
+# quick performance check
+tracking <- subject_data$Target == subject_data$target_gt
+probes <- subject_data$Probe == subject_data$probe_gt
+
 
 # when running real trials
 # subject_data <- read_csv("data/parsed_trials.csv") %>%
@@ -34,10 +45,7 @@ subject_data <- read_csv("data/parsed_trials.csv") %>%
 #          is_target = as.numeric(marked) <= 4,
 #          correct_td = TARGET == is_target)
 
-exp_data <- read_csv("data/exp1.csv") %>%
-  mutate(trial = 1:NROW(.),
-         has_probe = unique_id <= 10,
-         is_high_att = (trial %% 2 == 1))
+exp_data <- read_csv("data/exp1.csv")
 
 # motion_data <- read_csv("data/motion.csv")
 

@@ -62,6 +62,13 @@ def read_db(db_path, table_name, codeversions, mode):
 
     return trialdata, questiondata
 
+def parse_rawname(trialname):
+    fullname = os.path.splitext(trialname[0])[0]
+    rot_angle = int(trialname[1])
+
+    trial_params = {'rot_angle': rot_angle}
+    return trial_params
+
 def main():
 
     parser = argparse.ArgumentParser(description = "Parses MOT Exp:1 data",
@@ -76,7 +83,7 @@ def main():
     parser.add_argument("--mode", type = str, default = "debug",
                         choices = ['debug', 'live'],
                         help = 'Experiment mode')
-    parser.add_argument("--trialsbyp", type = int, default = 40,
+    parser.add_argument("--trialsbyp", type = int, default = 120,
                         help = 'Number of trials expected per subject')
     parser.add_argument("--trialdata", type = str, default = 'data/parsed_trials.csv',
                         help = 'Filename to dump parsed trial data')
@@ -84,11 +91,9 @@ def main():
                         help = 'Filename to dump parsed trial data')
 
 
-
     args = parser.parse_args()
 
     trs, qs = read_db(args.dataset, args.table_name, args.exp_flag, args.mode)
-
 
     qs = qs.rename(index=str, columns={'uniqueid': 'WID'})
 
@@ -98,14 +103,16 @@ def main():
                               'uniqueid':'WID'})
 
     print(trs)
-    # Make sure we have 150 observations per participant
+    trs["RotAngle"] = trs.TrialName.apply(lambda s: int(s[1]))
+    trs.TrialName = trs.TrialName.apply(lambda s: os.path.splitext(s[0])[0])
+    print(trs)
+
+    # Make sure we have 120 observations per participant
     trialsbyp = trs.WID.value_counts()
     print(trialsbyp)
     trialsbyp = trialsbyp[trialsbyp == args.trialsbyp]
     good_wids = trialsbyp.index
     trs = trs[trs.WID.isin(good_wids)]
-
-    print(trs)
 
     """Assign random identifiers to each participant"""
     wid_translate = {}
@@ -114,7 +121,6 @@ def main():
 
     trs["ID"] = trs.WID.apply(lambda x: wid_translate[x])
 
-    print(trs)
     # trs = trs.drop('WID', 1)
 
     trs.to_csv(args.trialdata, index=False)
