@@ -2,4 +2,5 @@ FROM rocker/verse:latest
 
 # Installs additional packages
 
-RUN r -e "install.packages(\"estimatr\")"
+RUN r -e "install.packages(c(\"estimatr\", \
+                             \"minpack.lm\"))"
