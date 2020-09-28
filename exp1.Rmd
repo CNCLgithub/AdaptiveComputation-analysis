@@ -31,12 +31,9 @@ subject_data <- read_csv("data/parsed_trials.csv") %>%
          target_gt = case_when(target_gt=="trg" ~ TRUE,
                                target_gt=="dis" ~ FALSE),
          probe_gt = case_when(probe_gt =="probe" ~ TRUE,
-                              probe_gt=="noprobe" ~ FALSE),)
-
-# quick performance check
-tracking <- subject_data$Target == subject_data$target_gt
-probes <- subject_data$Probe == subject_data$probe_gt
-
+                              probe_gt=="noprobe" ~ FALSE),
+         td_correct = Target == target_gt,
+         probe_correct = Probe == probe_gt)
 
 # when running real trials
 # subject_data <- read_csv("data/parsed_trials.csv") %>%
@@ -59,10 +56,11 @@ screen bad subjects
 ```{r}
 good_subjects_ids <- subject_data %>%
   group_by(ID) %>%
-  summarise(td_acc = 1.0, #mean(correct),
+  summarise(td_acc = mean(td_correct),
             n = n(),
-            td_se = 0, # sd(correct)/sqrt(n),
-            passed = (td_acc - td_se) > 0.5) %>%
+            td_se = sd(td_correct)/sqrt(n),
+            passed = (td_acc - td_se) > 0.5,
+            probe_acc = mean(probe_correct)) %>%
   filter(passed)
 
 good_subjects_data <- subject_data %>%
