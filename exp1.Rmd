@@ -1,15 +1,27 @@
 ---
 title: "Exp 1"
 output:
+  pdf_document: default
   html_document:
     df_print: paged
+header-includes:
+ \usepackage{booktabs}
+ \usepackage{longtable}
+ \usepackage{array}
+ \usepackage{multirow}
+ \usepackage{wrapfig}
+ \usepackage{float}
+ \floatplacement{figure}{H}
 ---
 
 # Setup
 
-imports
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(fig.pos = 'H', 
+                      echo=FALSE, warning=FALSE, message=FALSE)
 
-```{r}
+```
+```{r , include=FALSE}
 library(tidyverse)
 library(estimatr)
 library(ggplot2)
@@ -21,30 +33,22 @@ theme_set(th)
 
 load data (subject, exp, scenes)
 
-```{r}
+```{r echo=TRUE}
 # when running debug trials
 subject_data <- read_csv("data/parsed_trials.csv") %>%
   separate(TrialName, c("scene", "tracker", NA, "epoch", "probe_gt", "target_gt")) %>%
   mutate(scene = as.numeric(scene),
-         tracker = as.numeric(tracker),
+       tracker = as.numeric(tracker),
          epoch = as.numeric(epoch),
-         target_gt = case_when(target_gt=="trg" ~ TRUE,
-                               target_gt=="dis" ~ FALSE),
-         probe_gt = case_when(probe_gt =="probe" ~ TRUE,
-                              probe_gt=="noprobe" ~ FALSE),
+       target_gt = target_gt == "trg",
+         probe_gt = probe_gt == "probe",
          td_correct = Target == target_gt,
          probe_correct = Probe == probe_gt)
 
-# when running real trials
-# subject_data <- read_csv("data/parsed_trials.csv") %>%
-#   separate(TrialName, c("trial", "marked", NA), sep = "[(.?:)]") %>%
-#   mutate(trial = as.numeric(trial),
-#          is_target = as.numeric(marked) <= 4,
-#          correct_td = TARGET == is_target)
 
-exp_data <- read_csv("data/exp1.csv")
-
-# motion_data <- read_csv("data/motion.csv")
+exp_data <- read_csv("data/exp0_probe_map.csv") %>%
+  separate(epoch, c(NA, "epoch")) %>%
+  mutate(epoch = as.numeric(epoch))
 
 ```
 
@@ -59,21 +63,17 @@ good_subjects_ids <- subject_data %>%
   summarise(td_acc = mean(td_correct),
             n = n(),
             td_se = sd(td_correct)/sqrt(n),
-            passed = (td_acc - td_se) > 0.5,
-            probe_acc = mean(probe_correct)) %>%
+            passed_td = (td_acc - 2.0*td_se) > 0.5,
+            probe_acc = mean(probe_correct),
+            probe_se = sd(probe_correct)/sqrt(n),
+            passed_pb = (probe_acc - 2.0*probe_se) > 0.5,
+            passed = passed_td & passed_pb) %>%
   filter(passed)
 
 good_subjects_data <- subject_data %>%
   filter(ID %in% good_subjects_ids$ID)
 
-
-# human_summary <- good_subjects_data %>%
-#   summarise(
-#     avg_acc = mean(correct),
-#     n = n(),
-#     se_acc = sd(correct) / sqrt(n))
-# 
-# write.csv(human_summary, file = "output/human_summary.csv")
+print(good_subjects_ids)
 ```
 
 ## Analysis
@@ -82,41 +82,93 @@ good_subjects_data <- subject_data %>%
 Average subject performance by trial
 ```{r}
 across_subjects <- good_subjects_data %>%
-  group_by(trial) %>%
-  summarise(avg_td_acc = mean(correct_td),
-            avg_pb = mean(Probe),
-            n = n(),
-            td_se = sd(correct_td)/sqrt(n),
-            pb_se = sd(Probe)/sqrt(n))
+  group_by(scene, tracker, epoch, probe_gt, target_gt) %>%
+  summarise(avg_td_acc = mean(td_correct),
+            avg_pb = mean(probe_correct)) %>%
+  ungroup() %>%
+  group_by(scene, tracker, epoch) %>%
+  summarise(td_acc = mean(avg_td_acc),
+            pb_rate = mean(avg_pb))
 ```
 
 Merge human performance with trial data (trial data = spring, sigma, attention ...)
 
 ```{r}
+ns = nrow(across_subjects)
 full_data <- left_join(across_subjects, exp_data, 
-                       by = "trial")
+                       by = c("scene", "tracker", "epoch")) %>%
+  ungroup() %>%
+  mutate(att_rank = rank(att),
+         att_qrtl = factor(ceiling(att_rank * 4 / ns)))
 ```
+
+### Exploratory Visualization
+
+
+```{r}
+# full_data %>%
+# ggplot(aes(x = epoch, y = pb_rate, color = factor(tracker))) + 
+#   geom_line() +
+#   facet_wrap(vars(scene)) + 
+# ggtitle("Probe accuracy vs Att within scene")
+```
+
+```{r}
+full_data %>%
+  ggplot(aes(pb_rate, fill = att_qrtl)) + 
+  geom_density() +
+  scale_x_continuous(limits = c(0., 1.0)) +
+  facet_wrap(vars(att_qrtl)) +
+  ggtitle("Probe accuracy distribution within quartiles")
+```
+```{r}
+good_subjects_data %>%
+  ungroup() %>%
+  separate(ID, c(NA, "ID")) %>%
+  inner_join(full_data) %>%
+  group_by(ID,scene,tracker,epoch) %>%
+  summarise(pb_rate = mean(probe_correct),
+            att_qrtl = first(att_qrtl)) %>%
+  ggplot(aes(att_qrtl, pb_rate)) + 
+  geom_violin() +
+  facet_wrap(vars(ID)) +
+  ggtitle("Probe accuracy distribution within subject x quartiles")
+
+```
+
 
 Measure effect of probe design on subject probe detection
 
-```{r}
+```{r echo = TRUE}
 
 full_data %>%
-  group_by(is_high_att, has_probe) %>%
-  summarise(hit = mean(avg_pb))
+  filter(att_qrtl %in% c(1,4)) %>%
+  group_by(att_qrtl) %>%
+  summarise(mu = mean(pb_rate),
+            se = sd(pb_rate) / sqrt(n())) 
 
-full_data %>%
-  ggplot(aes(y = avg_pb, x = att, color = is_high_att)) + 
-  geom_point()
-# 
-# human_pd_by_design <- with(full_data, 
-#                            lm_robust(avg_pb_acc ~ attention + avg_td_acc))
+human_pd_by_design <- full_data %>%
+  # filter(att_qrtl %in% c(1,4)) %>%
+  mutate(high_att = as.numeric(att_qrtl) > 2) %>%
+  lm_robust(pb_rate ~ high_att, data = .)
+summary(human_pd_by_design)
 ```
 
-Optionally we can do a logit regression
 
-```{r}
+```{r echo = TRUE}
 
-#human_pd_by_design_logit <- with(full_data,
-#                             lm_robust(avg_pb_acc ~ ))
+fits <- full_data %>%
+  nest_by(scene, tracker) %>%
+  mutate(mod = list(lm_robust(pb_rate ~ att,
+                      data = data)))
+fits %>%
+  summarise(broom::tidy(mod)) %>%
+  filter(term == "att") %>%
+  select(-term) %>%
+  rename(coeff = estimate) %>%
+  ggplot(aes(factor(tracker), coeff)) +
+  geom_col() +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high)) +
+  facet_wrap(vars(scene)) + 
+  ggtitle("Correlation of probe accuracy ~ attention")
 ```
