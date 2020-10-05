@@ -3,9 +3,6 @@ library(estimatr)
 library(ggplot2)
 library(readr)
 library(scales)
-#library(devtools)
-#install_github("onofriandreapg/aomisc")
-# library(nls)
 library(minpack.lm)
 library(raster)
 library(tidyverse)
@@ -17,9 +14,13 @@ attention_full <- read_csv("data/attention.csv") %>%
   dplyr::rename(frame = t,
          scene = trial)
 
+
 full_data <- attention_full %>%
   pivot_longer(-c(frame, scene), names_to = "tracker", 
-               values_to = "att")
+               values_to = "att")  %>%
+  separate(tracker, c(NA, "tracker"), sep = '_') %>%
+  mutate(tracker = as.numeric(tracker)) %>%
+  filter(frame > 24)
 
 # top_att %>%
 #   ggplot(aes(frame, tracker)) + 
@@ -40,7 +41,8 @@ tps <- full_data %>%
   filter(n_t == 4 * 21) %>%
   arrange(scene, tracker)
 
-n_scenes = 24
+n_scenes = 10
+
 n_unique_scenes = length(unique(tps$scene))
 top_trials <- tps %>%
   group_by(scene,tracker) %>%
@@ -53,54 +55,50 @@ top_trials <- tps %>%
   filter(sd_rank > n_unique_scenes - n_scenes & tracker_rank > 1)
 
 top_trials %>%
-  ggplot(aes(x = delta_t, y = att, color = tracker)) +
+  ggplot(aes(x = delta_t, y = att, color = factor(tracker))) +
   geom_line() +
   facet_wrap(vars(scene))
 
 fits <- top_trials %>%
   nest_by(scene, tracker) %>%
   mutate(mod = list(nlsLM( att ~ k*exp(-1/2*(delta_t -mu)^2/sigma^2), start=c(mu=0,sigma=3,k=5),
-                      data = data)),
-         coefs = list(tidy(mod)))
-
+                      data = data)))
 coefs <- fits %>% 
   summarise(broom::tidy(mod)) %>%
-  select(scene, tracker, term, estimate) %>%
+  dplyr::select(scene, tracker, term, estimate) %>%
   filter(term == "sigma") %>%
   select(-term) %>%
-  transmute(sigma = clamp(estimate, 0, 8))
+  transmute(sigma = clamp(sqrt(estimate), 2, 3.33))
  
-top_trials <- top_trials %>% left_join(coefs)
-# %>%
-#   mutate(Slope = summary(mod)$coeff[2]) %>%
-#   select(-mod)
+att_map <- top_trials %>% 
+  left_join(coefs) %>%
+  filter(delta_t == 0) %>%
+  mutate(t_1 = -3 * sigma + frame,
+         t_2 = -1.5 * sigma + frame,
+         t_3 = 0 * sigma + frame,
+         t_4 = 1.5 * sigma + frame,
+         t_5 = 3.0 * sigma + frame,
+         ) %>%
+  select(-t_max) %>%
+  pivot_longer(cols = starts_with("t_"),
+               names_to = "epoch",
+               values_to = "t") %>%
+  mutate(frame = round(t)) %>% 
+  select(scene, tracker, epoch, frame) %>%
+  left_join(full_data)
 
-# 
-# max_att <- tps %>%
-#   slice(which.max(att)) %>%
-#   separate(tracker, c(NA, "tracker"), "_") %>%
-#   mutate(tracker = as.numeric(tracker))
-# 
-# min_att <- tps %>%
-#   slice(which.min(att)) %>%
-#   separate(tracker, c(NA, "tracker"), "_") %>%
-#   mutate(tracker = as.numeric(tracker))
-# 
-# time_points <- full_join(max_att, min_att) %>%
-#   arrange(scene)
-# 
-# scene_shuffle <- time_points %>%
-#   group_by(scene) %>%
-#   summarise() %>%
-#   sample_n(20) %>%
-#   mutate(unique_id=1:NROW(.))
-# 
-# shuffled_tps <- time_points %>%
-#   group_by(scene) %>%
-#   right_join(scene_shuffle) %>%
-#   arrange(unique_id) %>%
-#   ungroup()
-#   
-# write.csv(shuffled_tps, row.names = FALSE, 
-#           file = "output/attention_trial_tps.csv")
-# 
+att_map %>%
+  ggplot(aes(x = factor(epoch), y = att, color = factor(tracker))) +
+  geom_point() +
+  facet_wrap(vars(scene))
+
+
+att_map %>%
+  ggplot(aes(frame)) +
+  geom_histogram() +
+  facet_wrap(vars(epoch))
+
+
+write.csv(att_map, row.names = FALSE,
+      file = "output/exp0_probe_map.csv")
+
