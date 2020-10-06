@@ -36,19 +36,30 @@ load data (subject, exp, scenes)
 ```{r echo=TRUE}
 # when running debug trials
 subject_data <- read_csv("data/parsed_trials.csv") %>%
-  separate(TrialName, c("scene", "tracker", NA, "epoch", "probe_gt", "target_gt")) %>%
+  separate(TrialName, c("scene", "tracker", NA, "epoch", "trial_type", "gt")) %>%
   mutate(scene = as.numeric(scene),
-       tracker = as.numeric(tracker),
+         tracker = as.numeric(tracker),
          epoch = as.numeric(epoch),
-       target_gt = target_gt == "trg",
-         probe_gt = probe_gt == "probe",
-         td_correct = Target == target_gt,
-         probe_correct = Probe == probe_gt)
+         gt = gt == "T",
+         correct = Response == gt)
 
 
 exp_data <- read_csv("data/exp0_probe_map.csv") %>%
   separate(epoch, c(NA, "epoch")) %>%
-  mutate(epoch = as.numeric(epoch))
+  mutate(epoch = as.numeric(epoch)) %>%
+  ungroup() %>%
+  mutate(att_rank = rank(att),
+         att_qrtl = factor(ceiling(att_rank * 4 / ns))) %>%
+  group_by(scene, epoch) %>%
+  mutate(att_norm = att / sum(att),
+         att_scored = scale(att),
+         att_pct = pnorm(att_scored),
+         att_scored_qtl = case_when(between(att_pct, 0, 0.25) ~ 1,
+                                    between(att_pct, 0.25, 0.50) ~ 2,
+                                    between(att_pct, 0.50, 0.75) ~ 3,
+                                    TRUE ~ 4)) %>%
+  mutate(att_scored_qtl = factor(att_scored_qtl)) %>%
+  ungroup()
 
 ```
 
@@ -57,23 +68,22 @@ exp_data <- read_csv("data/exp0_probe_map.csv") %>%
 screen bad subjects
 
 
-```{r}
-good_subjects_ids <- subject_data %>%
-  group_by(ID) %>%
-  summarise(td_acc = mean(td_correct),
+```{r echo=TRUE}
+
+subject_performance <- subject_data %>%
+  group_by(ID, trial_type) %>%
+  summarise(acc = mean(correct),
             n = n(),
-            td_se = sd(td_correct)/sqrt(n),
-            passed_td = (td_acc - 2.0*td_se) > 0.5,
-            probe_acc = mean(probe_correct),
-            probe_se = sd(probe_correct)/sqrt(n),
-            passed_pb = (probe_acc - 2.0*probe_se) > 0.5,
-            passed = passed_td & passed_pb) %>%
-  filter(passed)
+            se = sd(correct)/sqrt(n),
+            passed = (acc - 1.5*se) > 0.5)
 
-good_subjects_data <- subject_data %>%
-  filter(ID %in% good_subjects_ids$ID)
+good_subjects_data <-subject_performance %>%
+  group_by(ID) %>%
+  summarise(passed = all(passed)) %>%
+  filter(passed) %>%
+  left_join(subject_data)
 
-print(good_subjects_ids)
+print(subject_performance)
 ```
 
 ## Analysis
@@ -82,54 +92,75 @@ print(good_subjects_ids)
 Average subject performance by trial
 ```{r}
 across_subjects <- good_subjects_data %>%
-  group_by(scene, tracker, epoch, probe_gt, target_gt) %>%
-  summarise(avg_td_acc = mean(td_correct),
-            avg_pb = mean(probe_correct)) %>%
-  ungroup() %>%
-  group_by(scene, tracker, epoch) %>%
-  summarise(td_acc = mean(avg_td_acc),
-            pb_rate = mean(avg_pb))
+  group_by(scene, tracker, epoch, trial_type) %>%
+  summarise(avg_acc = mean(correct),
+            n = n()) %>%
+  pivot_wider(names_from = trial_type, values_from = avg_acc) %>%
+  mutate(pr_abs = abs(pr - 0.5) * 2)
 ```
 
 Merge human performance with trial data (trial data = spring, sigma, attention ...)
 
 ```{r}
 ns = nrow(across_subjects)
-full_data <- left_join(across_subjects, exp_data, 
-                       by = c("scene", "tracker", "epoch")) %>%
-  ungroup() %>%
-  mutate(att_rank = rank(att),
-         att_qrtl = factor(ceiling(att_rank * 4 / ns)))
+full_data <- across_subjects %>%
+  left_join(exp_data, by = c("scene", "tracker", "epoch"))
 ```
 
 ### Exploratory Visualization
 
 
+
 ```{r}
-# full_data %>%
-# ggplot(aes(x = epoch, y = pb_rate, color = factor(tracker))) + 
-#   geom_line() +
-#   facet_wrap(vars(scene)) + 
-# ggtitle("Probe accuracy vs Att within scene")
+full_data %>%
+ggplot(aes(x = epoch, y = att_scored, color = factor(tracker))) +
+  geom_point() +
+  facet_wrap(vars(scene)) +
+ggtitle("Probe accuracy vs Att within scene")
 ```
 
 ```{r}
 full_data %>%
-  ggplot(aes(pb_rate, fill = att_qrtl)) + 
-  geom_density() +
-  scale_x_continuous(limits = c(0., 1.0)) +
-  facet_wrap(vars(att_qrtl)) +
-  ggtitle("Probe accuracy distribution within quartiles")
+ggplot(aes(x = att_norm, y = pr_abs, color = factor(tracker))) +
+  geom_point() +
+  facet_wrap(vars(scene)) +
+ggtitle("Probe accuracy vs Att within scene")
 ```
+
 ```{r}
-good_subjects_data %>%
-  ungroup() %>%
+full_data %>%
+ggplot(aes(pr, color = att_scored_qtl)) +
+  geom_density() +
+  facet_wrap(vars(att_scored_qtl)) +
+ggtitle("Probe accuracy vs Att across scenes")
+```
+
+```{r}
+full_data %>%
+  ggplot(aes(x = att_scored_qtl, y = pr_abs)) +
+  geom_violin() +
+ggtitle("Probe accuracy vs Att across scenes")
+```
+
+```{r}
+full_data %>%
+  ggplot(aes(x = att_qrtl, y = pr_abs)) +
+  geom_violin() +
+ggtitle("Probe accuracy vs Att across scenes")
+```
+
+```{r}
+
+per_subject <- good_subjects_data %>%
   separate(ID, c(NA, "ID")) %>%
-  inner_join(full_data) %>%
+  left_join(full_data) %>%
   group_by(ID,scene,tracker,epoch) %>%
-  summarise(pb_rate = mean(probe_correct),
-            att_qrtl = first(att_qrtl)) %>%
-  ggplot(aes(att_qrtl, pb_rate)) + 
+  summarise(pr = mean(pr),
+            att_qrtl = first(att_scored_qtl)) %>%
+  ungroup()
+
+per_subject %>%
+  ggplot(aes(att_qrtl, pr)) + 
   geom_violin() +
   facet_wrap(vars(ID)) +
   ggtitle("Probe accuracy distribution within subject x quartiles")
@@ -142,15 +173,19 @@ Measure effect of probe design on subject probe detection
 ```{r echo = TRUE}
 
 full_data %>%
-  filter(att_qrtl %in% c(1,4)) %>%
-  group_by(att_qrtl) %>%
-  summarise(mu = mean(pb_rate),
-            se = sd(pb_rate) / sqrt(n())) 
+  ungroup() %>%
+  filter(att_scored_qtl %in% c(1,4)) %>%
+  group_by(att_scored_qtl) %>%
+  summarise(mu = mean(pr_abs),
+            se = sd(pr_abs) / sqrt(n())) 
 
 human_pd_by_design <- full_data %>%
-  # filter(att_qrtl %in% c(1,4)) %>%
-  mutate(high_att = as.numeric(att_qrtl) > 2) %>%
-  lm_robust(pb_rate ~ high_att, data = .)
+# filter(att_scored_qtl %in% c(1,4)) %>%
+  lm_robust(pr_abs ~ att_scored, data = .)
+summary(human_pd_by_design)
+
+human_pd_by_design <- full_data %>%
+  lm_robust(pr_abs ~ att + att_norm, data = .)
 summary(human_pd_by_design)
 ```
 
@@ -158,12 +193,14 @@ summary(human_pd_by_design)
 ```{r echo = TRUE}
 
 fits <- full_data %>%
-  nest_by(scene, tracker) %>%
-  mutate(mod = list(lm_robust(pb_rate ~ att,
+  ungroup() %>%
+  nest_by(scene) %>%
+  mutate(mod = list(lm_robust(pr_abs ~ att_norm,
                       data = data)))
+
 fits %>%
   summarise(broom::tidy(mod)) %>%
-  filter(term == "att") %>%
+  filter(term == "att_norm") %>%
   select(-term) %>%
   rename(coeff = estimate) %>%
   ggplot(aes(factor(tracker), coeff)) +

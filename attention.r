@@ -22,14 +22,6 @@ full_data <- attention_full %>%
   mutate(tracker = as.numeric(tracker)) %>%
   filter(frame > 24)
 
-# top_att %>%
-#   ggplot(aes(frame, tracker)) + 
-#   geom_tile(aes(fill = att)) + 
-#   scale_fill_gradient2(low = muted("blue"), 
-#                        high = muted("red")) + 
-# facet_wrap(vars(scene))
-# ggsave("output/attention_trial_tps.png")
-
 tps <- full_data %>%
   group_by(scene, tracker) %>%
   mutate(t_max = which.max(att) + min(frame),
@@ -52,7 +44,7 @@ top_trials <- tps %>%
          tracker_rank = dense_rank(max_att)) %>%
   ungroup() %>%
   mutate(sd_rank = dense_rank(sd_max_att)) %>%
-  filter(sd_rank > n_unique_scenes - n_scenes & tracker_rank > 1)
+filter(sd_rank > n_unique_scenes - n_scenes & tracker_rank >= 0)
 
 top_trials %>%
   ggplot(aes(x = delta_t, y = att, color = factor(tracker))) +

@@ -28,7 +28,7 @@ def read_db(db_path, table_name, codeversions, mode):
     rows = s.execute()
 
     rawdata = []
-    statuses = [3, 4, 5, 7]
+    statuses = list(range(3, 8)) # [3, 4, 5, 7]
     for row in rows:
         if (row['status'] in statuses and
             row['mode'] == mode and
@@ -81,7 +81,7 @@ def main():
     parser.add_argument("--exp_flag", type = str, default = "1.0",
                         help = 'Experiment version flag')
     parser.add_argument("--mode", type = str, default = "debug",
-                        choices = ['debug', 'live'],
+                        choices = ['debug', 'sandbox', 'live'],
                         help = 'Experiment mode')
     parser.add_argument("--trialsbyp", type = int, default = 120,
                         help = 'Number of trials expected per subject')
@@ -105,7 +105,7 @@ def main():
     print(trs)
     trs["RotAngle"] = trs.TrialName.apply(lambda s: int(s[1]))
     trs.TrialName = trs.TrialName.apply(lambda s: os.path.splitext(s[0])[0])
-    print(trs)
+    # print(trs)
 
     # Make sure we have 120 observations per participant
     trialsbyp = trs.WID.value_counts()
