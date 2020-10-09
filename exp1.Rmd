@@ -18,7 +18,7 @@ header-includes:
 
 ```{r global-options, include=FALSE}
 knitr::opts_chunk$set(fig.pos = 'H', 
-                      echo=FALSE, warning=FALSE, message=FALSE)
+                      echo=TRUE, warning=FALSE, message=FALSE)
 
 ```
 ```{r , include=FALSE}
@@ -34,32 +34,39 @@ theme_set(th)
 load data (subject, exp, scenes)
 
 ```{r echo=TRUE}
-# when running debug trials
 subject_data <- read_csv("data/parsed_trials.csv") %>%
-  separate(TrialName, c("scene", "tracker", NA, "epoch", "trial_type", "gt")) %>%
+  separate(TrialName, c("scene", "tracker", NA, "epoch", "probe_gt", "target_gt")) %>%
   mutate(scene = as.numeric(scene),
          tracker = as.numeric(tracker),
          epoch = as.numeric(epoch),
-         gt = gt == "T",
-         correct = Response == gt)
-
+         target_gt = target_gt=="trg",
+         probe_gt = probe_gt =="probe",
+         pr = Probe == probe_gt,
+         td = Target == target_gt)
 
 exp_data <- read_csv("data/exp0_probe_map.csv") %>%
   separate(epoch, c(NA, "epoch")) %>%
-  mutate(epoch = as.numeric(epoch)) %>%
-  ungroup() %>%
+  mutate(epoch = as.numeric(epoch))
+
+ns = nrow(exp_data)
+exp_data <- exp_data %>%
   mutate(att_rank = rank(att),
-         att_qrtl = factor(ceiling(att_rank * 4 / ns))) %>%
+         att_qtl = factor(ceiling(att_rank * 4 / ns))) %>%
   group_by(scene, epoch) %>%
   mutate(att_norm = att / sum(att),
-         att_scored = scale(att),
+         att_norm_qtl = case_when(between(att_norm, 0, 0.25) ~ 1,
+                                  between(att_norm, 0.25, 0.50) ~ 2,
+                                  between(att_norm, 0.50, 0.75) ~ 3,
+                                  TRUE ~ 4)) %>%
+  ungroup() %>%
+  mutate(att_scored = scale(att),
          att_pct = pnorm(att_scored),
          att_scored_qtl = case_when(between(att_pct, 0, 0.25) ~ 1,
                                     between(att_pct, 0.25, 0.50) ~ 2,
                                     between(att_pct, 0.50, 0.75) ~ 3,
                                     TRUE ~ 4)) %>%
-  mutate(att_scored_qtl = factor(att_scored_qtl)) %>%
-  ungroup()
+  mutate(att_scored_qtl = factor(att_scored_qtl, levels = c(1,2,3,4)),
+         att_norm_qtl = factor(att_norm_qtl, levels = c(1,2,3,4)))
 
 ```
 
@@ -71,19 +78,23 @@ screen bad subjects
 ```{r echo=TRUE}
 
 subject_performance <- subject_data %>%
+  pivot_longer(cols = c(td, pr), names_to = "trial_type", values_to = "correct") %>%
   group_by(ID, trial_type) %>%
   summarise(acc = mean(correct),
             n = n(),
             se = sd(correct)/sqrt(n),
-            passed = (acc - 1.5*se) > 0.5)
+            passed = (acc - 2.0*se) > 0.5)
 
-good_subjects_data <-subject_performance %>%
-  group_by(ID) %>%
-  summarise(passed = all(passed)) %>%
+good_subjects_data <- subject_performance %>%
+  group_by(ID) %>% 
+  filter(trial_type == "td") %>%
+  # summarise(passed = all(passed)) %>%
   filter(passed) %>%
   left_join(subject_data)
 
-print(subject_performance)
+good_subjects_data %>%
+  summarise(n = n(),
+            across(c(td,pr), list(mu = mean, sd = sd)))
 ```
 
 ## Analysis
@@ -92,76 +103,94 @@ print(subject_performance)
 Average subject performance by trial
 ```{r}
 across_subjects <- good_subjects_data %>%
-  group_by(scene, tracker, epoch, trial_type) %>%
-  summarise(avg_acc = mean(correct),
-            n = n()) %>%
-  pivot_wider(names_from = trial_type, values_from = avg_acc) %>%
-  mutate(pr_abs = abs(pr - 0.5) * 2)
+  filter(td) %>%
+  group_by(scene, tracker, epoch) %>%
+  summarise(pr = mean(pr),
+            n = n(),
+            pr_se = sd(pr) / sqrt(n)) %>%
+mutate(pr = abs(pr - 0.5) * 2)
+
+across_subjects %>%
+  group_by(scene, tracker) %>%
+  summarise(n = n())
+
+good_subjects_data %>%
+  group_by(condition) %>%
+  summarise(n = 4*n()/ns, 
+            across(c(pr, td), list(mu = mean, sd = sd)))
 ```
 
 Merge human performance with trial data (trial data = spring, sigma, attention ...)
 
 ```{r}
-ns = nrow(across_subjects)
 full_data <- across_subjects %>%
   left_join(exp_data, by = c("scene", "tracker", "epoch"))
 ```
 
-### Exploratory Visualization
-
-
+### Exploratory Visualizatio - Across subjects
 
 ```{r}
 full_data %>%
-ggplot(aes(x = epoch, y = att_scored, color = factor(tracker))) +
-  geom_point() +
-  facet_wrap(vars(scene)) +
-ggtitle("Probe accuracy vs Att within scene")
+  ggplot(aes(pr, after_stat(density),fill = att_qtl)) +
+  geom_histogram(bins = 10) +
+  xlim(0, 1) +
+  facet_wrap(vars(att_qtl)) +
+ggtitle("Probe accuracy vs Raw Att Qtl")
+```
+```{r}
+full_data %>%
+ggplot(aes(pr,after_stat(density), fill = att_norm_qtl)) +
+  geom_histogram(bins = 10) +
+  xlim(0, 1) +
+  facet_wrap(vars(att_norm_qtl)) +
+ggtitle("Probe accuracy vs Normed Att Qtl")
 ```
 
 ```{r}
 full_data %>%
-ggplot(aes(x = att_norm, y = pr_abs, color = factor(tracker))) +
-  geom_point() +
-  facet_wrap(vars(scene)) +
-ggtitle("Probe accuracy vs Att within scene")
-```
-
-```{r}
-full_data %>%
-ggplot(aes(pr, color = att_scored_qtl)) +
-  geom_density() +
+ggplot(aes(pr, after_stat(density), fill = att_scored_qtl)) +
+  geom_histogram(binwidth= 0.1) +
+  xlim(0, 1) +
   facet_wrap(vars(att_scored_qtl)) +
-ggtitle("Probe accuracy vs Att across scenes")
+ggtitle("Probe accuracy vs Z Att Qtl")
 ```
 
 ```{r}
 full_data %>%
-  ggplot(aes(x = att_scored_qtl, y = pr_abs)) +
-  geom_violin() +
-ggtitle("Probe accuracy vs Att across scenes")
+ggplot(aes(x = epoch, y = att_scored, color = factor(tracker_rank))) +
+  geom_point() +
+  facet_wrap(vars(scene)) +
+ggtitle("Probe accuracy vs Att within scene")
 ```
 
 ```{r}
 full_data %>%
-  ggplot(aes(x = att_qrtl, y = pr_abs)) +
-  geom_violin() +
-ggtitle("Probe accuracy vs Att across scenes")
+ggplot(aes(x = att_scored, y = pr, color = factor(tracker_rank))) +
+  geom_point() +
+  facet_wrap(vars(scene)) +
+ggtitle("Probe accuracy vs Att within scene")
 ```
+
+
 
 ```{r}
 
 per_subject <- good_subjects_data %>%
   separate(ID, c(NA, "ID")) %>%
-  left_join(full_data) %>%
-  group_by(ID,scene,tracker,epoch) %>%
-  summarise(pr = mean(pr),
-            att_qrtl = first(att_scored_qtl)) %>%
-  ungroup()
+  group_by(ID) %>%
+  mutate(rt = scale(RT)) %>%
+  ungroup() %>%
+  filter(td) %>%
+  left_join(exp_data, by = c("scene", "tracker", "epoch"))
+  # group_by(ID,scene,tracker,epoch) %>%
+  # summarise(pr = mean(pr),
+  #           att_qrtl = first(att_scored_qtl)) %>%
+  # ungroup()
 
 per_subject %>%
-  ggplot(aes(att_qrtl, pr)) + 
-  geom_violin() +
+  filter(pr) %>%
+  ggplot(aes(att_qtl)) + 
+  geom_bar(aes()) +
   facet_wrap(vars(ID)) +
   ggtitle("Probe accuracy distribution within subject x quartiles")
 
@@ -174,28 +203,52 @@ Measure effect of probe design on subject probe detection
 
 full_data %>%
   ungroup() %>%
-  filter(att_scored_qtl %in% c(1,4)) %>%
-  group_by(att_scored_qtl) %>%
-  summarise(mu = mean(pr_abs),
-            se = sd(pr_abs) / sqrt(n())) 
+  group_by(att_norm_qtl) %>%
+  summarise(mu = mean(pr),
+            se = sd(pr) / sqrt(n())) 
 
-human_pd_by_design <- full_data %>%
-# filter(att_scored_qtl %in% c(1,4)) %>%
-  lm_robust(pr_abs ~ att_scored, data = .)
+human_pd_by_design <- good_subjects_data %>%
+  group_by(ID) %>%
+  mutate(rt = scale(log(RT))) %>%
+  ungroup() %>%
+  filter(td) %>%
+  left_join(exp_data) %>%
+  lm_robust(rt ~ att_scored, data = .)
 summary(human_pd_by_design)
 
 human_pd_by_design <- full_data %>%
-  lm_robust(pr_abs ~ att + att_norm, data = .)
+  lm_robust(pr ~ att + att_norm, data = .)
 summary(human_pd_by_design)
+```
+```{r}
+
+fits <- good_subjects_data %>%
+  filter(td) %>%
+  left_join(exp_data) %>%
+  ungroup() %>%
+  nest_by(scene) %>%
+  mutate(mod = list(lm_robust(pr ~ att_norm,
+                      data = data)))
+
+fits %>%
+  summarise(broom::tidy(mod)) %>%
+  filter(term == "att_norm") %>%
+  # select(-term) %>%
+  # rename(coeff = estimate) %>%
+  ggplot(aes(estimate, term)) +
+  geom_vline(xintercept = 0) +
+  geom_errorbar(aes(xmin = conf.low, xmax = conf.high)) +
+  facet_wrap(vars(scene)) +
+  ggtitle("Correlation of probe accuracy ~ attention")
 ```
 
 
-```{r echo = TRUE}
+```{r}
 
 fits <- full_data %>%
   ungroup() %>%
-  nest_by(scene) %>%
-  mutate(mod = list(lm_robust(pr_abs ~ att_norm,
+  nest_by(scene, tracker_rank) %>%
+  mutate(mod = list(lm_robust(pr ~ att_norm,
                       data = data)))
 
 fits %>%
@@ -203,9 +256,74 @@ fits %>%
   filter(term == "att_norm") %>%
   select(-term) %>%
   rename(coeff = estimate) %>%
-  ggplot(aes(factor(tracker), coeff)) +
-  geom_col() +
+  ggplot(aes(factor(tracker_rank), coeff)) +
+  geom_hline(yintercept = 0) +
+  # ylim(-4,4) +
   geom_errorbar(aes(ymin = conf.low, ymax = conf.high)) +
-  facet_wrap(vars(scene)) + 
+  facet_wrap(vars(scene)) +
+  ggtitle("Correlation of probe accuracy ~ attention")
+```
+
+### Causal effects
+
+First collect all data points (no averaging across scene)
+
+```{r}
+
+case_data <- good_subjects_data %>%
+  left_join(exp_data) %>%
+  filter(td)
+
+cate_data <- case_data %>%
+  filter(probe_gt)
+
+```
+Visualizing the density of accurate responses across scenes and trackers
+
+```{r}
+
+
+```
+
+
+```{r}
+cate_data %>%
+  ungroup() %>%
+  group_by(att_qtl) %>%
+  summarise(mu = mean(pr),
+            se = sd(pr) / sqrt(n())) 
+
+cate_data %>%
+  ggplot(aes(att)) + 
+  geom_histogram(aes()) +
+  facet_wrap(vars(ID)) +
+  ggtitle("Probe accuracy distribution within subject x quartiles")
+
+cate_data %>%
+  ggplot(aes(x = att, y = pr)) +
+  geom_point() 
+```
+
+Lets look at logisitc regressions 
+
+```{r}
+fits <- cate_data %>%
+  ungroup() %>%
+  nest_by(scene, tracker_rank) %>%
+  mutate(mod = list(glm(pr ~ att, family = binomial(), data = data)))
+  # mutate(mod = list(lm_robust(pr ~ att, data = data)))
+
+fits %>%
+  summarise(broom::tidy(mod)) %>%
+  filter(term == "att") %>%
+  mutate(conf.low = estimate - 1.92*std.error, 
+         conf.high = estimate + 1.92*std.error) %>%
+  select(-term) %>%
+  rename(coeff = estimate) %>%
+  ggplot(aes(factor(tracker_rank), coeff)) +
+  geom_hline(yintercept = 0) +
+  # ylim(-4,4) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high)) +
+  facet_wrap(vars(scene)) +
   ggtitle("Correlation of probe accuracy ~ attention")
 ```

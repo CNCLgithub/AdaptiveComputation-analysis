@@ -10,7 +10,7 @@ library(tidyverse)
 th <- theme_classic()
 theme_set(th)
 
-attention_full <- read_csv("data/attention.csv") %>%
+attention_full <- read_csv("data/isr_inertia_target_designation_attention.csv") %>%
   dplyr::rename(frame = t,
          scene = trial)
 
@@ -33,7 +33,7 @@ tps <- full_data %>%
   filter(n_t == 4 * 21) %>%
   arrange(scene, tracker)
 
-n_scenes = 10
+n_scenes = 24
 
 n_unique_scenes = length(unique(tps$scene))
 top_trials <- tps %>%
@@ -44,7 +44,7 @@ top_trials <- tps %>%
          tracker_rank = dense_rank(max_att)) %>%
   ungroup() %>%
   mutate(sd_rank = dense_rank(sd_max_att)) %>%
-filter(sd_rank > n_unique_scenes - n_scenes & tracker_rank >= 0)
+  filter(sd_rank > n_unique_scenes - n_scenes & tracker_rank >= 1)
 
 top_trials %>%
   ggplot(aes(x = delta_t, y = att, color = factor(tracker))) +
@@ -76,7 +76,7 @@ att_map <- top_trials %>%
                names_to = "epoch",
                values_to = "t") %>%
   mutate(frame = round(t)) %>% 
-  select(scene, tracker, epoch, frame) %>%
+  select(scene, tracker, epoch, frame, tracker_rank) %>%
   left_join(full_data)
 
 att_map %>%
@@ -90,7 +90,17 @@ att_map %>%
   geom_histogram() +
   facet_wrap(vars(epoch))
 
+full_data %>%
+  mutate(zatt = scale(att)) %>%
+  ggplot(aes(frame, tracker)) +
+  geom_tile(aes(fill = zatt)) +
+  scale_fill_gradient2(low = muted("blue"),
+                       high = muted("red")) +
+facet_wrap(vars(scene))
+# ggsave("output/attention_trial_tps.png")
 
-write.csv(att_map, row.names = FALSE,
-      file = "output/exp0_probe_map.csv")
+
+
+# write.csv(att_map, row.names = FALSE,
+      # file = "output/exp0_probe_map.csv")
 
