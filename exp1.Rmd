@@ -92,9 +92,9 @@ good_subjects_data <- subject_performance %>%
   filter(passed) %>%
   left_join(subject_data)
 
-good_subjects_data %>%
-  summarise(n = n(),
-            across(c(td,pr), list(mu = mean, sd = sd)))
+# good_subjects_data %>%
+#   summarise(n = n(),
+#             across(c(td,pr), list(mu = mean, sd = sd)))
 ```
 
 ## Analysis
@@ -157,7 +157,7 @@ ggtitle("Probe accuracy vs Z Att Qtl")
 
 ```{r}
 full_data %>%
-ggplot(aes(x = epoch, y = att_scored, color = factor(tracker_rank))) +
+ggplot(aes(x = epoch, y = att, color = factor(tracker_rank))) +
   geom_point() +
   facet_wrap(vars(scene)) +
 ggtitle("Probe accuracy vs Att within scene")
@@ -165,10 +165,20 @@ ggtitle("Probe accuracy vs Att within scene")
 
 ```{r}
 full_data %>%
-ggplot(aes(x = att_scored, y = pr, color = factor(tracker_rank))) +
+ggplot(aes(x = epoch, y = pr, color = factor(tracker_rank))) +
   geom_point() +
   facet_wrap(vars(scene)) +
 ggtitle("Probe accuracy vs Att within scene")
+```
+
+```{r}
+good_subjects_data %>%
+  left_join(exp_data) %>%
+  filter(td) %>%
+  group_by(tracker_rank) %>%
+  summarise(n = n(),
+            pr_mu = mean(pr),
+            pr_se = sd(pr) / sqrt(n))
 ```
 
 
@@ -196,6 +206,8 @@ per_subject %>%
 
 ```
 
+> Also look at eccentricity qtls and crowding
+
 
 Measure effect of probe design on subject probe detection
 
@@ -203,7 +215,7 @@ Measure effect of probe design on subject probe detection
 
 full_data %>%
   ungroup() %>%
-  group_by(att_norm_qtl) %>%
+  group_by(att_scored_qtl) %>%
   summarise(mu = mean(pr),
             se = sd(pr) / sqrt(n())) 
 
@@ -216,8 +228,9 @@ human_pd_by_design <- good_subjects_data %>%
   lm_robust(rt ~ att_scored, data = .)
 summary(human_pd_by_design)
 
+
 human_pd_by_design <- full_data %>%
-  lm_robust(pr ~ att + att_norm, data = .)
+  lm_robust(pr ~ att, data = .)
 summary(human_pd_by_design)
 ```
 ```{r}
@@ -226,13 +239,14 @@ fits <- good_subjects_data %>%
   filter(td) %>%
   left_join(exp_data) %>%
   ungroup() %>%
+  filter(tracker_rank != 2) %>%
   nest_by(scene) %>%
-  mutate(mod = list(lm_robust(pr ~ att_norm,
+  mutate(mod = list(lm_robust(pr ~ att,
                       data = data)))
 
 fits %>%
   summarise(broom::tidy(mod)) %>%
-  filter(term == "att_norm") %>%
+  filter(term == "att") %>%
   # select(-term) %>%
   # rename(coeff = estimate) %>%
   ggplot(aes(estimate, term)) +
