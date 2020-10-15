@@ -3,8 +3,8 @@ library(estimatr)
 library(ggplot2)
 library(readr)
 library(scales)
-library(minpack.lm)
 library(raster)
+library(minpack.lm)
 library(tidyverse)
 
 th <- theme_classic()
@@ -21,10 +21,12 @@ full_data <- attention_full %>%
   separate(tracker, c(NA, "tracker"), sep = '_') %>%
   mutate(tracker = as.numeric(tracker))
 
-window_size = 5
+probe_limit = 48
+window_size = 24
+tmax = max(full_data$frame)
 
 tps <- full_data %>%
-  filter(between(frame, 48, 96)) %>%
+  filter(between(frame, probe_limit, tmax-probe_limit)) %>%
   group_by(scene, tracker) %>%
   mutate(t_max = which.max(att) + min(frame),
          delta_t = frame - t_max) %>%
@@ -32,7 +34,7 @@ tps <- full_data %>%
   filter(between(delta_t, -window_size, window_size)) %>%
   mutate(n_t = dplyr::n()) %>%
   ungroup() %>%
-  filter(n_t >= 4*2*window_size) %>%
+  # filter(n_t >= 4*2*window_size) %>%
   arrange(scene, tracker)
 
 n_scenes = 12
@@ -40,13 +42,14 @@ n_scenes = 12
 n_unique_scenes = length(unique(tps$scene))
 top_trials <- tps %>%
   group_by(scene,tracker) %>%
-  mutate(max_att = max(att)) %>%
+  mutate(max_att = max(att),
+         sd_att = sd(att)) %>%
   group_by(scene) %>%
   mutate(scene_max = max(max_att),
-         sd_max_att = sd(max_att),
+         max_sd_att = max(sd_att),
          tracker_rank = dense_rank(max_att)) %>%
   ungroup() %>%
-  mutate(s_rank = dense_rank(scene_max)) %>%
+  mutate(s_rank = dense_rank(max_sd_att)) %>%
   filter(s_rank > n_unique_scenes - n_scenes)
 
 # top_trials <- top_trackers %>%
@@ -62,12 +65,15 @@ fits <- top_trials %>%
   nest_by(scene) %>%
   mutate(mod = list(nlsLM( att ~ k*exp(-1/2*(delta_t -mu)^2/sigma^2), start=c(mu=0,sigma=3,k=5),
                       data = data)))
+
+max_sigma = probe_limit / 3
 coefs <- fits %>% 
   summarise(broom::tidy(mod)) %>%
   dplyr::select(scene, term, estimate) %>%
   filter(term == "sigma") %>%
   select(-term) %>%
-  transmute(sigma = clamp(sqrt(estimate), 2, 10.0))
+  # rename(sigma = estimate)
+  transmute(sigma = clamp(estimate, lower = 3.0, upper = max_sigma))
  
 att_map <- top_trials %>% 
   right_join(coefs) %>%
@@ -92,7 +98,7 @@ att_map <- top_trials %>%
 
 att_map %>%
   ggplot(aes(x = epoch, y = att, color = factor(tracker))) +
-  geom_point() +
+  geom_line() +
   facet_wrap(vars(scene))
 
 
@@ -102,6 +108,7 @@ att_map %>%
   facet_wrap(vars(epoch))
 
 full_data %>%
+  filter(scene %in% att_map$scene) %>%
   mutate(zatt = scale(att)) %>%
   ggplot(aes(frame, tracker)) +
   geom_tile(aes(fill = zatt)) +

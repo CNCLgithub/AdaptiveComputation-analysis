@@ -44,9 +44,10 @@ subject_data <- read_csv("data/parsed_trials.csv") %>%
          pr = Probe == probe_gt,
          td = Target == target_gt)
 
-exp_data <- read_csv("data/exp0_probe_map.csv") %>%
-  separate(epoch, c(NA, "epoch")) %>%
-  mutate(epoch = as.numeric(epoch))
+exp_data <- read_csv("output/isr_inertia_probe_map.csv") %>%
+  group_by(scene) %>%
+  mutate(epoch = dense_rank(frame)) %>%
+  ungroup()
 
 ns = nrow(exp_data)
 exp_data <- exp_data %>%
@@ -157,7 +158,7 @@ ggtitle("Probe accuracy vs Z Att Qtl")
 
 ```{r}
 full_data %>%
-ggplot(aes(x = epoch, y = att, color = factor(tracker_rank))) +
+ggplot(aes(x = epoch, y = att, color = factor(tracker))) +
   geom_point() +
   facet_wrap(vars(scene)) +
 ggtitle("Probe accuracy vs Att within scene")
@@ -165,7 +166,7 @@ ggtitle("Probe accuracy vs Att within scene")
 
 ```{r}
 full_data %>%
-ggplot(aes(x = epoch, y = pr, color = factor(tracker_rank))) +
+ggplot(aes(x = epoch, y = pr, color = factor(tracker))) +
   geom_point() +
   facet_wrap(vars(scene)) +
 ggtitle("Probe accuracy vs Att within scene")
@@ -175,7 +176,7 @@ ggtitle("Probe accuracy vs Att within scene")
 good_subjects_data %>%
   left_join(exp_data) %>%
   filter(td) %>%
-  group_by(tracker_rank) %>%
+  group_by(tracker) %>%
   summarise(n = n(),
             pr_mu = mean(pr),
             pr_se = sd(pr) / sqrt(n))
@@ -239,7 +240,6 @@ fits <- good_subjects_data %>%
   filter(td) %>%
   left_join(exp_data) %>%
   ungroup() %>%
-  filter(tracker_rank != 2) %>%
   nest_by(scene) %>%
   mutate(mod = list(lm_robust(pr ~ att,
                       data = data)))
@@ -261,7 +261,7 @@ fits %>%
 
 fits <- full_data %>%
   ungroup() %>%
-  nest_by(scene, tracker_rank) %>%
+  nest_by(scene, tracker) %>%
   mutate(mod = list(lm_robust(pr ~ att_norm,
                       data = data)))
 
@@ -270,7 +270,7 @@ fits %>%
   filter(term == "att_norm") %>%
   select(-term) %>%
   rename(coeff = estimate) %>%
-  ggplot(aes(factor(tracker_rank), coeff)) +
+  ggplot(aes(factor(tracker), coeff)) +
   geom_hline(yintercept = 0) +
   # ylim(-4,4) +
   geom_errorbar(aes(ymin = conf.low, ymax = conf.high)) +
@@ -307,6 +307,12 @@ cate_data %>%
   summarise(mu = mean(pr),
             se = sd(pr) / sqrt(n())) 
 
+case_data %>%
+  ungroup() %>%
+  group_by(att_qtl, probe_gt) %>%
+  summarise(mu = mean(pr),
+            se = sd(pr) / sqrt(n()))
+
 cate_data %>%
   ggplot(aes(att)) + 
   geom_histogram(aes()) +
@@ -323,7 +329,7 @@ Lets look at logisitc regressions
 ```{r}
 fits <- cate_data %>%
   ungroup() %>%
-  nest_by(scene, tracker_rank) %>%
+  nest_by(scene, tracker) %>%
   mutate(mod = list(glm(pr ~ att, family = binomial(), data = data)))
   # mutate(mod = list(lm_robust(pr ~ att, data = data)))
 
@@ -334,7 +340,7 @@ fits %>%
          conf.high = estimate + 1.92*std.error) %>%
   select(-term) %>%
   rename(coeff = estimate) %>%
-  ggplot(aes(factor(tracker_rank), coeff)) +
+  ggplot(aes(factor(tracker), coeff)) +
   geom_hline(yintercept = 0) +
   # ylim(-4,4) +
   geom_errorbar(aes(ymin = conf.low, ymax = conf.high)) +
