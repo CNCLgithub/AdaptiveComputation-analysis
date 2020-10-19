@@ -75,7 +75,7 @@ coefs <- fits %>%
   # rename(sigma = estimate)
   transmute(sigma = clamp(estimate, lower = 3.0, upper = max_sigma))
  
-att_map <- top_trials %>% 
+att_map <- top_trials %>%
   right_join(coefs) %>%
   filter(delta_t == 0 & tracker_rank == max(tracker_rank)) %>%
   mutate(t_1 = -3 * sigma + frame,
