@@ -9,7 +9,7 @@ import os
 import json
 import sys
 import argparse
-# import numpy as np
+import numpy as np
 import pandas as pd
 from sqlalchemy import create_engine, MetaData, Table
 
@@ -69,6 +69,35 @@ def parse_rawname(trialname):
     trial_params = {'rot_angle': rot_angle}
     return trial_params
 
+
+def classify(probe_timing, spacebar):
+    PROBE_WINDOW = 500
+    ds = spacebar - probe_timing
+    return np.logical_and(ds >= 0, ds <= PROBE_WINDOW)
+
+def parse_row(row):
+    gt_probes = row.TrialName[2]
+    probe_trackers, probe_frames = zip(*gt_probes)
+    FRAME_DURATION = 41.6667;
+    probe_timings = np.array(probe_frames)*FRAME_DURATION
+    
+    spacebar = np.array(row.Probe)
+    
+    probe_hit_1 = classify(probe_timings[0], spacebar)
+    probe_hit_2 = classify(probe_timings[1], spacebar)
+    probe_hit_3 = classify(probe_timings[2], spacebar)
+    
+    probe_fp_matrix = np.vstack([probe_hit_1, probe_hit_2, probe_hit_3])
+    probe_hit_count = np.logical_and.reduce(np.logical_not(probe_fp_matrix), axis=0)
+    
+    cols = {'probe_hit_1' : any(probe_hit_1),
+            'probe_hit_2' : any(probe_hit_2),
+            'probe_hit_3' : any(probe_hit_3),
+            'probe_fp' : sum(probe_hit_count)/len(spacebar)}
+    print(cols)
+    return cols
+    
+
 def main():
 
     parser = argparse.ArgumentParser(description = "Parses MOT Exp:1 data",
@@ -76,9 +105,9 @@ def main():
    
     parser.add_argument("--dataset", type = str, help = "Path to trial dataset",
                         default = 'data/participants.db')
-    parser.add_argument("--table_name", type = str, default = "mot_live",
+    parser.add_argument("--table_name", type = str, default = "exp1_live",
                         help = 'Table name')
-    parser.add_argument("--exp_flag", type = str, default = "1.0",
+    parser.add_argument("--exp_flag", type = str, default = "1.1",
                         help = 'Experiment version flag')
     parser.add_argument("--mode", type = str, default = "debug",
                         choices = ['debug', 'sandbox', 'live'],
@@ -102,10 +131,9 @@ def main():
                      columns={'ReactionTime':'RT',
                               'uniqueid':'WID'})
 
+    trs = trs.merge(trs.apply(lambda row: pd.Series(parse_row(row)), axis=1),
+            left_index=True, right_index=True)
     print(trs)
-    trs["RotAngle"] = trs.TrialName.apply(lambda s: int(s[1]))
-    trs.TrialName = trs.TrialName.apply(lambda s: os.path.splitext(s[0])[0])
-    # print(trs)
 
     # Make sure we have 120 observations per participant
     trialsbyp = trs.WID.value_counts()
