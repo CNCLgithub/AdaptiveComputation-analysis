@@ -78,13 +78,14 @@ screen bad subjects
 
 ```{r echo=TRUE}
 
+perm_thresh = 2.0
 subject_performance <- subject_data %>%
   pivot_longer(cols = c(td, pr), names_to = "trial_type", values_to = "correct") %>%
   group_by(ID, trial_type) %>%
   summarise(acc = mean(correct),
             n = n(),
             se = sd(correct)/sqrt(n),
-            passed = (acc - 2.0*se) > 0.5)
+            passed = abs(acc - 0.5) > perm_thresh*se)
 
 good_subjects_data <- subject_performance %>%
   group_by(ID) %>% 
@@ -320,7 +321,8 @@ cate_data %>%
   ungroup() %>%
   group_by(ID, att_qtl) %>%
   summarise(mu = mean(pr),
-            se = sd(pr) / sqrt(n())) 
+            se = sd(pr) / sqrt(n()),
+            n = n()) 
 
 ```
 
