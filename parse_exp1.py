@@ -71,31 +71,47 @@ def parse_rawname(trialname):
 
 
 def classify(probe_timing, spacebar):
-    PROBE_WINDOW = 500
+    PROBE_WINDOW = 1200
     ds = spacebar - probe_timing
     return np.logical_and(ds >= 0, ds <= PROBE_WINDOW)
 
 def parse_row(row):
+
+    # scene data
     gt_probes = row.TrialName[2]
+
+    # target designation
+    td_acc = sum(row.Target[:4]) / 4.0
+
+    # probe data
     probe_trackers, probe_frames = zip(*gt_probes)
     FRAME_DURATION = 41.6667;
     probe_timings = np.array(probe_frames)*FRAME_DURATION
     
     spacebar = np.array(row.Probe)
-    
-    probe_hit_1 = classify(probe_timings[0], spacebar)
-    probe_hit_2 = classify(probe_timings[1], spacebar)
-    probe_hit_3 = classify(probe_timings[2], spacebar)
-    
-    probe_fp_matrix = np.vstack([probe_hit_1, probe_hit_2, probe_hit_3])
-    probe_hit_count = np.logical_and.reduce(np.logical_not(probe_fp_matrix), axis=0)
-    
-    cols = {'probe_hit_1' : any(probe_hit_1),
-            'probe_hit_2' : any(probe_hit_2),
-            'probe_hit_3' : any(probe_hit_3),
-            'probe_fp' : sum(probe_hit_count)/len(spacebar)}
-    print(cols)
-    return cols
+
+    probes_classified = list(map(lambda x : classify(x, spacebar),
+                                 probe_timings))
+    probe_hits = list(map(any, probes_classified))
+    probe_fp_matrix = np.vstack(probes_classified)
+    probe_hit_count = np.logical_and.reduce(np.logical_not(probe_fp_matrix),
+                                            axis=0)
+    n_presses = len(spacebar)
+    template = {
+        'WID' : row.WID,
+        'scene' : row.TrialName[0],
+        'td_acc' : td_acc,
+        'probe_fp' : sum(probe_hit_count)/n_presses if n_presses else 0
+    }
+    cols = [ {'frame' : pf,
+              'tracker' : tr,
+              'pbh' : pbh,
+              **template}
+             for (pf,tr,pbh) in zip(probe_frames, probe_trackers,
+                                    probe_hits)]
+
+    return pd.DataFrame(cols)
+
     
 
 def main():
@@ -107,7 +123,7 @@ def main():
                         default = 'data/participants.db')
     parser.add_argument("--table_name", type = str, default = "exp1_live",
                         help = 'Table name')
-    parser.add_argument("--exp_flag", type = str, default = "1.1",
+    parser.add_argument("--exp_flag", type = str, default = "4.0",
                         help = 'Experiment version flag')
     parser.add_argument("--mode", type = str, default = "debug",
                         choices = ['debug', 'sandbox', 'live'],
@@ -130,15 +146,16 @@ def main():
     trs = trs.rename(index=str,
                      columns={'ReactionTime':'RT',
                               'uniqueid':'WID'})
+    trs['scene'] = trs['TrialName'].apply(lambda r: r[0])
 
-    trs = trs.merge(trs.apply(lambda row: pd.Series(parse_row(row)), axis=1),
-            left_index=True, right_index=True)
-    print(trs)
+    row_data = pd.concat(trs.apply(parse_row, axis=1).tolist())
+    trs = trs[['scene', 'WID', 'RT', 'condition', 'TrialOrder']]
+    trs = trs.merge(row_data, on = ['scene', 'WID'])
 
     # Make sure we have 120 observations per participant
     trialsbyp = trs.WID.value_counts()
     print(trialsbyp)
-    trialsbyp = trialsbyp[trialsbyp == args.trialsbyp]
+    trialsbyp = trialsbyp[trialsbyp / 4 == args.trialsbyp]
     good_wids = trialsbyp.index
     trs = trs[trs.WID.isin(good_wids)]
 

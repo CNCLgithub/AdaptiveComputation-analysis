@@ -35,16 +35,9 @@ load data (subject, exp, scenes)
 
 ```{r echo=TRUE}
 subject_data <- read_csv("data/parsed_trials.csv") %>%
-  separate(TrialName, c("scene", "tracker", NA, "epoch", "probe_gt", "target_gt")) %>%
-  mutate(scene = as.numeric(scene),
-         tracker = as.numeric(tracker),
-         epoch = as.numeric(epoch),
-         target_gt = target_gt=="trg",
-         probe_gt = probe_gt =="probe",
-         pr = Probe == probe_gt,
-         td = Target == target_gt)
+  select(-c(WID))
 
-exp_data <- read_csv("data/isr_inertia_extended_probe_map_nd.csv") %>%
+exp_data <- read_csv("output/isr_inertia_probe_map.csv") %>%
   group_by(scene) %>%
   mutate(epoch = dense_rank(frame)) %>%
   ungroup()
@@ -65,7 +58,7 @@ exp_data <- exp_data %>%
          att_scored_qtl = case_when(between(att_pct, 0, 0.25) ~ 1,
                                     between(att_pct, 0.25, 0.50) ~ 2,
                                     between(att_pct, 0.50, 0.75) ~ 3,
-                                    TRUE ~ 4)) %>%
+                                  TRUE ~ 4)) %>%
   mutate(att_scored_qtl = factor(att_scored_qtl, levels = c(1,2,3,4)),
          att_norm_qtl = factor(att_norm_qtl, levels = c(1,2,3,4)))
 
@@ -78,25 +71,21 @@ screen bad subjects
 
 ```{r echo=TRUE}
 
-perm_thresh = 2.0
+perf_thresh = 2.0
 subject_performance <- subject_data %>%
-  pivot_longer(cols = c(td, pr), names_to = "trial_type", values_to = "correct") %>%
-  group_by(ID, trial_type) %>%
-  summarise(acc = mean(correct),
+  group_by(ID) %>%
+  summarise(td_acc_mu = mean(td_acc),
+            pbhr = mean(pbh),
+            pbfp = mean(probe_fp),
             n = n(),
-            se = sd(correct)/sqrt(n),
-            passed = abs(acc - 0.5) > perm_thresh*se)
+            pbh_se = sd(pbh)/sqrt(n),
+            td_acc_se = sd(td_acc)/sqrt(n/3),
+            passed = abs(td_acc_mu - 0.5) > perf_thresh*td_acc_se)
 
 good_subjects_data <- subject_performance %>%
   group_by(ID) %>% 
-  filter(trial_type == "td") %>%
-  # summarise(passed = all(passed)) %>%
   filter(passed) %>%
   left_join(subject_data)
-
-# good_subjects_data %>%
-#   summarise(n = n(),
-#             across(c(td,pr), list(mu = mean, sd = sd)))
 ```
 
 ## Analysis
@@ -277,51 +266,79 @@ First collect all data points (no averaging across scene)
 
 ```{r}
 
-case_data <- good_subjects_data %>%
-  left_join(exp_data) %>%
-  mutate(zcrowding = scale(cumulative_dist)) %>%
-  filter(td)
+ate_data <- good_subjects_data %>%
+  left_join(exp_data)
+  # mutate(zcrowding = scale(cumulative_dist)) %>%
 
-cate_data <- case_data %>%
-  filter(probe_gt)
+cate_data <- ate_data %>%
+  filter(td_acc == 1)
 
 ```
 
 
+sanity checks on data
+```{r}
+ate_data %>%
+  ggplot(aes(att)) + 
+  geom_histogram(aes()) +
+  facet_wrap(vars(ID))
+
+ate_data %>%
+  filter(pbh) %>%
+  ggplot(aes(x = att)) + 
+  xlim(0, 20) +
+  geom_histogram(aes())
+
+ate_data %>%
+  ggplot(aes(x = att, y = pbh)) +
+  geom_point() 
+```
+across subject
 
 ```{r}
+ate_data %>%
+  ungroup() %>%
+  group_by(att_qtl) %>%
+  summarise(mu = mean(pbh),
+            se = sd(pbh) / sqrt(n()),
+            n = n()) 
+
 cate_data %>%
   ungroup() %>%
   group_by(att_qtl) %>%
-  summarise(mu = mean(pr),
-            se = sd(pr) / sqrt(n())) 
+  summarise(mu = mean(pbh),
+            se = sd(pbh) / sqrt(n()),
+            n = n()) 
 
-case_data %>%
-  ungroup() %>%
-  group_by(att_qtl, probe_gt) %>%
-  summarise(mu = mean(pr),
-            se = sd(pr) / sqrt(n()))
+ate_across_subjects <- ate_data %>%
+  group_by(scene, frame) %>%
+  summarise(att_scored = first(att_scored),
+            n = n(),
+            pbh_mu = mean(pbh),
+            pbh_se = sd(pbh) / sqrt(n))
 
-cate_data %>%
-  ggplot(aes(att)) + 
-  geom_histogram(aes()) +
-  facet_wrap(vars(ID)) +
-  ggtitle("Probe accuracy distribution within subject x quartiles")
-
-cate_data %>%
-  ggplot(aes(x = att, y = pr)) +
-  geom_point() 
+ate_across_subjects %>%
+  ggplot(aes(x = att_scored, y = pbh_mu)) +
+  geom_density2d_filled()
 ```
-
 
 within subject
 
 ```{r}
+ate_data %>%
+  ungroup() %>%
+  group_by(ID, att_qtl) %>%
+  summarise(mu = mean(pbh),
+            se = sd(pbh) / sqrt(n()),
+            n = n()) 
+
+```
+```{r}
 cate_data %>%
   ungroup() %>%
   group_by(ID, att_qtl) %>%
-  summarise(mu = mean(pr),
-            se = sd(pr) / sqrt(n()),
+  summarise(mu = mean(pbh),
+            se = sd(pbh) / sqrt(n()),
             n = n()) 
 
 ```
@@ -331,51 +348,52 @@ Lets look at logisitc regressions
 
 ```{r}
 human_pd_by_design <- cate_data %>%
-  lm_robust(pr ~ att_scored + tracker_to_origin, fixed_effects = ~ scene, data = .)
+  lm_robust(pbh ~ att_scored, fixed_effects = ~ scene, data = .)
+  # lm_robust(pr ~ att_scored + tracker_to_origin, fixed_effects = ~ scene, data = .)
 summary(human_pd_by_design)
 ```
 
-```{r}
-human_pd_by_design <- cate_data %>%
-  iv_robust(pr ~ att_scored | zcrowding,  data = .)
-summary(human_pd_by_design)
+<!-- ```{r} -->
+<!-- # human_pd_by_design <- ate_data %>% -->
+<!-- #   iv_robust(pbh ~ att_scored | zcrowding,  data = .) -->
+<!-- # summary(human_pd_by_design) -->
 
-```
+<!-- ``` -->
 
-```{r}
+<!-- ```{r} -->
 
-crowd_to_att <- with(cate_data,
-                     lm_robust(att_scored ~ zcrowding))
-crowd_to_pr <- with(cate_data,
-               lm_robust(pr ~ zcrowding))
-summary(crowd_to_att)
-summary(crowd_to_pr)
-cate_data$res_att = cate_data$att_scored - crowd_to_att$fitted.values
-cate_data$res_pr = cate_data$pr - crowd_to_att$fitted.values
+<!-- # crowd_to_att <- with(cate_data, -->
+<!-- #                      lm_robust(att_scored ~ zcrowding)) -->
+<!-- # crowd_to_pr <- with(cate_data, -->
+<!-- #                lm_robust(pr ~ zcrowding)) -->
+<!-- # summary(crowd_to_att) -->
+<!-- # summary(crowd_to_pr) -->
+<!-- # cate_data$res_att = cate_data$att_scored - crowd_to_att$fitted.values -->
+<!-- # cate_data$res_pr = cate_data$pr - crowd_to_att$fitted.values -->
+<!-- #  -->
+<!-- # res_att_to_pr <- with(cate_data, -->
+<!-- #                       lm_robust(res_pr ~ res_att)) -->
+<!-- # summary(res_att_to_pr) -->
+<!-- ``` -->
 
-res_att_to_pr <- with(cate_data,
-                      lm_robust(res_pr ~ res_att))
-summary(res_att_to_pr)
-```
-
-```{r}
-fits <- cate_data %>%
-  ungroup() %>%
-  nest_by(scene, tracker) %>%
-  mutate(mod = list(glm(pr ~ att, family = binomial(), data = data)))
-  # mutate(mod = list(lm_robust(pr ~ att, data = data)))
-
-fits %>%
-  summarise(broom::tidy(mod)) %>%
-  filter(term == "att") %>%
-  mutate(conf.low = estimate - 1.92*std.error, 
-         conf.high = estimate + 1.92*std.error) %>%
-  select(-term) %>%
-  rename(coeff = estimate) %>%
-  ggplot(aes(factor(tracker), coeff)) +
-  geom_hline(yintercept = 0) +
-  # ylim(-4,4) +
-  geom_errorbar(aes(ymin = conf.low, ymax = conf.high)) +
-  facet_wrap(vars(scene)) +
-  ggtitle("Correlation of probe accuracy ~ attention")
-```
+<!-- ```{r} -->
+<!-- # fits <- cate_data %>% -->
+<!-- #   ungroup() %>% -->
+<!-- #   nest_by(scene, tracker) %>% -->
+<!-- #   mutate(mod = list(glm(pr ~ att, family = binomial(), data = data))) -->
+<!-- #   # mutate(mod = list(lm_robust(pr ~ att, data = data))) -->
+<!-- #  -->
+<!-- # fits %>% -->
+<!-- #   summarise(broom::tidy(mod)) %>% -->
+<!-- #   filter(term == "att") %>% -->
+<!-- #   mutate(conf.low = estimate - 1.92*std.error,  -->
+<!-- #          conf.high = estimate + 1.92*std.error) %>% -->
+<!-- #   select(-term) %>% -->
+<!-- #   rename(coeff = estimate) %>% -->
+<!-- #   ggplot(aes(factor(tracker), coeff)) + -->
+<!-- #   geom_hline(yintercept = 0) + -->
+<!-- #   # ylim(-4,4) + -->
+<!-- #   geom_errorbar(aes(ymin = conf.low, ymax = conf.high)) + -->
+<!-- #   facet_wrap(vars(scene)) + -->
+<!-- #   ggtitle("Correlation of probe accuracy ~ attention") -->
+<!-- ``` -->
