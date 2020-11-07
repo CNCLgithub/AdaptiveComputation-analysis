@@ -71,7 +71,7 @@ def parse_rawname(trialname):
 
 
 def classify(probe_timing, spacebar):
-    PROBE_WINDOW = 1200
+    PROBE_WINDOW = 1000
     ds = spacebar - probe_timing
     return np.logical_and(ds >= 0, ds <= PROBE_WINDOW)
 
@@ -123,7 +123,7 @@ def main():
                         default = 'data/participants.db')
     parser.add_argument("--table_name", type = str, default = "exp1_live",
                         help = 'Table name')
-    parser.add_argument("--exp_flag", type = str, default = "4.0",
+    parser.add_argument("--exp_flag", type = str, nargs ='+', default = ["4.0"],
                         help = 'Experiment version flag')
     parser.add_argument("--mode", type = str, default = "debug",
                         choices = ['debug', 'sandbox', 'live'],
