@@ -76,19 +76,15 @@ def classify(probe_timing, spacebar):
     return np.logical_and(ds >= 0, ds <= PROBE_WINDOW)
 
 def parse_row(row):
-
-    # scene data
-    gt_probes = row.TrialName[2]
-
     # target designation
     td_acc = sum(row.Target[:4]) / 4.0
 
-    # probe data
-    probe_trackers, probe_frames = zip(*gt_probes)
+    spacebar = np.array(row.Probe) # TODO change name saved to Spacebar
+    diff_array = np.array(row.DifficultyArray)
+    print(diff_array)
+    return
+
     FRAME_DURATION = 41.6667;
-    probe_timings = np.array(probe_frames)*FRAME_DURATION
-    
-    spacebar = np.array(row.Probe)
 
     probes_classified = list(map(lambda x : classify(x, spacebar),
                                  probe_timings))
@@ -112,7 +108,6 @@ def parse_row(row):
 
     return pd.DataFrame(cols)
 
-    
 
 def main():
 
@@ -154,7 +149,6 @@ def main():
 
     # Make sure we have 120 observations per participant
     trialsbyp = trs.WID.value_counts()
-    print(trialsbyp)
     trialsbyp = trialsbyp[trialsbyp / 4 == args.trialsbyp]
     good_wids = trialsbyp.index
     trs = trs[trs.WID.isin(good_wids)]
