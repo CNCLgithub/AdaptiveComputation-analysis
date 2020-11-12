@@ -71,7 +71,7 @@ def parse_rawname(trialname):
 
 
 def classify(probe_timing, spacebar):
-    PROBE_WINDOW = 1000
+    PROBE_WINDOW = 900
     ds = spacebar - probe_timing
     return np.logical_and(ds >= 0, ds <= PROBE_WINDOW)
 
@@ -106,9 +106,10 @@ def parse_row(row):
     cols = [ {'frame' : pf,
               'tracker' : tr,
               'pbh' : pbh,
+              'td_probe' : row.Target[tr-1],
               **template}
              for (pf,tr,pbh) in zip(probe_frames, probe_trackers,
-                                    probe_hits)]
+                                                  probe_hits)]
 
     return pd.DataFrame(cols)
 

@@ -34,20 +34,29 @@ theme_set(th)
 
 load data (subject, exp, scenes)
 
-```{r echo=TRUE}
+```{r echo=FALSE}
 subject_data <- read_csv("data/parsed_trials.csv") %>%
   select(-c(WID))
 
-exp_data <- read_csv("output/isr_inertia_probe_map.csv") %>%
+exp_data <- read_csv("output/isr_inertia_480_probe_map_eccentricity.csv") %>%
   group_by(scene) %>%
   mutate(epoch = dense_rank(frame)) %>%
-  ungroup()
+  ungroup()  %>%
+  mutate(zcrowding = scale(cumulative_dist))
+
+att_data <- read.csv("output/isr_inertia_probe_map.csv") %>%
+  select(-c(att, zatt))
+
+exp_data <- exp_data %>%
+  left_join(att_data, by = c("scene", "frame", "tracker")) %>%
+mutate(zatt_prop = zatt * prop_att)
 
 ns = nrow(exp_data)
 exp_data <- exp_data %>%
-  mutate(log_att = log(att),
-         att_rank = rank(att),
-         att_qtl = factor(ceiling(att_rank * 4 / ns))) %>%
+  mutate(log_att = log(att)) %>%
+  group_by(scene) %>%
+  mutate(att_rank = dense_rank(att)) %>%
+  ungroup() %>%
   group_by(scene, epoch) %>%
   mutate(att_norm = att / sum(att),
          att_norm_qtl = case_when(between(att_norm, 0, 0.25) ~ 1,
@@ -62,7 +71,8 @@ exp_data <- exp_data %>%
                                     between(att_pct, 0.50, 0.75) ~ 3,
                                   TRUE ~ 4)) %>%
   mutate(att_scored_qtl = factor(att_scored_qtl, levels = c(1,2,3,4)),
-         att_norm_qtl = factor(att_norm_qtl, levels = c(1,2,3,4)))
+         att_norm_qtl = factor(att_norm_qtl, levels = c(1,2,3,4))) %>%
+  mutate(high_att = zatt > 2)
 
 ```
 
@@ -73,28 +83,30 @@ screen bad subjects
 
 ```{r echo=TRUE}
 
-perf_thresh = 2.0
+perf_thresh =  2.0
 subject_performance <- subject_data %>%
   group_by(ID) %>%
   summarise(td_acc_mu = mean(td_acc),
             pbhr = mean(pbh),
             pbfp = mean(probe_fp),
+            d.prime = qnorm(pbhr) - qnorm(pbfp),
             n = n(),
             pbh_se = sd(pbh)/sqrt(n),
             td_acc_se = sd(td_acc)/sqrt(n/3),
-          passed = abs(td_acc_mu - 0.5) > perf_thresh*td_acc_se & pbhr > 0)
+            passed = abs(td_acc_mu - 0.5) > perf_thresh*td_acc_se & d.prime > 0) %>%
+  ungroup()
 
 good_subjects_data <- subject_performance %>%
-  group_by(ID) %>% 
   filter(passed) %>%
-  left_join(subject_data)
+  select(ID) %>%
+  left_join(subject_data, by = "ID")
 ```
 
-## Analysis
+# Analysis
 
 
 
-### Causal effects
+## Causal effects
 
 First collect all data points (no averaging across scene)
 
@@ -107,12 +119,13 @@ correct (4/4) target designation.
 ```{r}
 
 ate_data <- good_subjects_data %>%
-  left_join(exp_data)
-  # mutate(zcrowding = scale(cumulative_dist)) %>%
+  left_join(exp_data, by = c("scene", "frame", "tracker")) %>% 
+  mutate(d.prime = as.numeric(pbh) - probe_fp) %>%
+  ungroup()
 
 # the conditional average treatment effect, conditioned on correct TD
 cate_data <- ate_data %>%
-  filter(td_acc == 1)
+  filter(td_probe)
 
 ```
 
@@ -134,72 +147,251 @@ exp_data %>%
 
 ```
 
+## Across Scenes
+
+Each scene consisted of 4 probes.
 
 The $ATE$ and $CATE$ across subjects at the qtl level
 ```{r}
 ate_data %>%
   ungroup() %>%
-  group_by(att_scored_qtl) %>%
+  group_by(high_att) %>%
   summarise(hr = mean(pbh),
-            fp = mean(pbfp),
-            d.prime = hr - fp,
+            fp = mean(probe_fp),
+            d.prime = qnorm(hr) - qnorm(fp),
             se = sd(pbh) / sqrt(n()),
-            n = n()) 
+            n = n())
 
 cate_data %>%
   ungroup() %>%
-  group_by(att_scored_qtl) %>%
+  group_by(high_att) %>%
   summarise(hr = mean(pbh),
-            fp = mean(pbfp),
-            d.prime = hr - fp,
+            fp = mean(probe_fp),
+            d.prime = qnorm(hr) - qnorm(fp),
             se = sd(pbh) / sqrt(n()),
-            n = n())  
+            n = n())
+
+
+gen_design <- function(x, y) {
+  rest =  "+ tracker_to_tracker_mean | zcrowding + dist_to_nd + tracker_to_tracker_mean"
+  form <- as.formula(paste(y, "~", x, rest))
+  return(form)
+}
+
+high_att_design <- gen_design("high_att", "pbh")
+zatt_design <-  gen_design("zatt", "pbh")
+
 ```
+
+Regressing high (`att_qtl == 4`) vs low attention probes
+
+The $ATE$ of attention on probe hit rate with scene and subject level fixed effects
+
+```{r}
+
+
+ate_data %>%
+  iv_robust(high_att_design, fixed_effects = ~ scene ,
+            data = .) %>%
+  summary()
+```
+
+
+The $CATE$ of attention on probe hit rate with scene and subject level fixed effects
+
+```{r}
+cate_data %>%
+  iv_robust(high_att_design, fixed_effects = ~ scene + ID,
+            data = .) %>%
+  summary()
+```
+
+The same regressions as above except with the continuous att (z-scored) predictor
+
+The $ATE$ of attention on probe hit rate with scene and subject level fixed effects
+
+```{r}
+
+ate_data %>%
+  iv_robust(zatt_design, fixed_effects = ~ scene + ID,
+            data = .) %>%
+  summary()
+```
+
+
+
+The $CATE$ of attention on probe hit rate with scene and subject level fixed effects
+
+```{r}
+cate_data %>%
+  iv_robust(zatt_design, fixed_effects = ~ scene + ID,
+            data = .) %>%
+  summary()
+```
+
+<!-- ```{r} -->
+<!-- ate_data %>% -->
+<!--   filter(pbh) %>% -->
+<!--   ggplot(aes(zatt)) + -->
+<!--   geom_histogram() +  -->
+<!--   facet_wrap(vars(scene)) -->
+
+<!-- fits <- ate_data %>% -->
+<!--   nest_by(scene) %>% -->
+<!--   mutate(mod = list(iv_robust(high_att_design, data = data))) %>% -->
+<!--   summarise(broom::tidy(mod)) %>% -->
+<!--   filter(term == "high_attTRUE") %>% -->
+<!--   mutate(conf.low = estimate - 1.92*std.error, -->
+<!--          conf.high = estimate + 1.92*std.error) %>% -->
+<!--   rename(coeff = estimate) %>% -->
+<!--   filter(p.value < 0.1) -->
+
+<!-- fits %>% -->
+<!--   ggplot(aes(coeff)) + -->
+<!--   geom_vline(xintercept = 0) + -->
+<!--   xlim(-1, 1) + -->
+<!--   geom_errorbarh(aes(y = 0, xmin = conf.low, xmax = conf.high)) + -->
+<!--   facet_wrap(vars(scene)) + -->
+<!--   ggtitle("Correlation of d-prime ~ attention") -->
+<!-- ``` -->
+
+
+## DPRIME - Within Scenes, across subjects
 
 The $ATE$ across subjects for a given scene, epoch pair.
 
+As of now there is probably not enough data to report any significant effects.
+
+The histogram plots the distribution of effect sizes for significant scenes
+
 ```{r}
-ate_across_subjects <- ate_data %>%
-  group_by(scene, frame) %>%
-  summarise(att_scored = first(att_scored),
-            n = n(),
-            pbh_mu = mean(pbh),
-            pbfp_mu = mean(pbfp),
-            d.prime = pbh_mu - pbfp_mu,
-            pbh_se = sd(pbh) / sqrt(n))
+ate_across_subjects <- good_subjects_data %>%
+  group_by(scene, frame, tracker) %>%
+  summarise(n = n(),
+            td_acc_mu = mean(td_acc),
+            td_probe_mu = mean(td_probe),
+            td_probe_se = sd(td_probe) / sqrt(n),
+            pbh_mu = mean(pbh) * 0.999 + 0.0001,
+            pbfp_mu = mean(probe_fp) * 0.999 + 0.0001,
+            d.prime = qnorm(pbh_mu) - qnorm(pbfp_mu),
+            pbh_se = sd(pbh) / sqrt(n),
+            conf.low = qnorm(pbh_mu - pbh_se) - qnorm(pbfp_mu),
+            conf.high = qnorm(pbh_mu + pbh_se) - qnorm(pbfp_mu)) %>%
+  ungroup() %>%
+  left_join(exp_data)
+
+
+dprime_design <- d.prime ~ zatt + tracker_to_tracker_mean |  zcrowding + dist_to_nd + tracker_to_tracker_mean
 
 ate_across_subjects %>%
-  ggplot(aes(x = att_scored, y = d.prime)) +
-  geom_hex()
+  iv_robust(dprime_design, data = .) %>%
+  summary()
+
+fits <- ate_across_subjects %>%
+  nest_by(scene) %>%
+  mutate(mod = list(iv_robust(dprime_design, data = data))) %>%
+  summarise(broom::tidy(mod)) %>%
+  filter(term == "zatt") %>%
+  mutate(conf.low = estimate - 1.92*std.error,
+         conf.high = estimate + 1.92*std.error) %>%
+  rename(coeff = estimate) %>%
+  filter(p.value < 0.1)
+
+fits %>%
+  ggplot(aes(coeff)) +
+  geom_vline(xintercept = 0) +
+  xlim(-1, 1) +
+  geom_errorbarh(aes(y = 0, xmin = conf.low, xmax = conf.high)) +
+  facet_wrap(vars(scene)) +
+  ggtitle("Correlation of d-prime ~ attention")
+```
+
+```{r}
+ate_across_subjects %>%
+  filter(scene == 11) %>%
+  print()
 ```
 
 The $cate$ across subjects for a given scene, epoch pair.
 
 ```{r}
-cate_across_subjects <- cate_data %>%
-  group_by(scene, frame) %>%
-  summarise(att_scored = first(att_scored),
-            n = n(),
-            pbh_mu = mean(pbh),
-            pbfp_mu = mean(pbfp),
-            d.prime = pbh_mu - pbfp_mu,
-            pbh_se = sd(pbh) / sqrt(n))
+cate_across_subjects  <- cate_data %>%
+  filter(td_probe) %>%
+  group_by(scene, frame, tracker) %>%
+  summarise(n = n(),
+            td_acc_mu = mean(td_acc),
+            td_probe_mu = mean(td_probe),
+            td_probe_se = sd(td_probe) / sqrt(n),
+            pbh_mu = mean(pbh) * 0.999 + 0.0001,
+            pbfp_mu = mean(probe_fp) * 0.999 + 0.0001,
+            d.prime = qnorm(pbh_mu) - qnorm(pbfp_mu),
+            pbh_se = sd(pbh) / sqrt(n),
+            conf.low = qnorm(pbh_mu - pbh_se) - qnorm(pbfp_mu),
+            conf.high = qnorm(pbh_mu + pbh_se) - qnorm(pbfp_mu)) %>%
+  ungroup() %>%
+  left_join(exp_data)
+ 
 
 cate_across_subjects %>%
-  ggplot(aes(x = att_scored, y = d.prime)) +
-  geom_hex()
+  iv_robust(zatt_design, data = .) %>%
+  summary()
+
+
+fits <- cate_across_subjects %>%
+  nest_by(scene) %>%
+  mutate(mod = list(iv_robust(zatt_design, data = data))) %>%
+  summarise(broom::tidy(mod)) %>%
+  filter(term == "zatt") %>%
+  mutate(conf.low = estimate - 1.92*std.error,
+         conf.high = estimate + 1.92*std.error) %>%
+  rename(coeff = estimate) %>%
+  filter(p.value < 0.05)
+
+fits %>%
+  ggplot(aes(coeff)) +
+  geom_vline(xintercept = 0) +
+  xlim(-1, 1) +
+  geom_errorbarh(aes(y = 0, xmin = conf.low, xmax = conf.high)) +
+  facet_wrap(vars(scene)) +
+  ggtitle("Correlation of d-prime ~ attention")
+
 ```
 
+## DPRIME - Within subject
+
+
+
+```{r}
+ate_within_subject <- ate_data %>%
+  ungroup() %>%
+  group_by(ID, att_scored_qtl) %>%
+  summarise(mu = mean(d.prime),
+            se = sd(d.prime) / sqrt(n()),
+            conf.low = mu - se,
+            conf.high = mu + se,
+            n = n()) %>%
+  ungroup()
+
+cate_within_subject <- cate_data %>%
+  ungroup() %>%
+  group_by(ID, att_scored_qtl) %>%
+  summarise(mu = mean(d.prime),
+            se = sd(d.prime) / sqrt(n()),
+            conf.low = mu - se,
+            conf.high = mu + se,
+            se = sd(d.prime) / sqrt(n()),
+            n = n()) %>%
+  ungroup()
+
+
+
+```
 
 within subject $ATE$ across qtls
 
 ```{r}
-ate_data %>%
-  ungroup() %>%
-  group_by(ID, att_qtl) %>%
-  summarise(mu = mean(pbh),
-            se = sd(pbh) / sqrt(n()),
-            n = n()) 
+
+print(ate_within_subject)
 
 ```
 
@@ -207,77 +399,201 @@ within subject $CATE$ across qtls
 
 
 ```{r}
-cate_data %>%
+print(cate_within_subject)
+
+```
+
+```{r}
+
+ate_within_subject %>%
+  ggplot(aes(x = att_scored_qtl, y = mu)) +
+  # geom_col() + 
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high)) +
+  facet_wrap(vars(ID))
+```
+```{r}
+
+cate_within_subject %>%
+  ggplot(aes(x = att_scored_qtl, y = mu)) +
+  # geom_col() + 
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high)) +
+  facet_wrap(vars(ID))
+```
+
+```{r}
+fits <- ate_data %>%
   ungroup() %>%
-  group_by(ID, att_qtl) %>%
-  summarise(mu = mean(pbh),
-            se = sd(pbh) / sqrt(n()),
-            n = n()) 
+  nest_by(ID) %>%
+  mutate(mod = list(iv_robust(high_att_design, data = data)))
 
+fits %>%
+  summarise(broom::tidy(mod)) %>%
+  filter(term == "high_attTRUE") %>%
+  mutate(conf.low = estimate - 1.92*std.error,
+         conf.high = estimate + 1.92*std.error) %>%
+  rename(coeff = estimate) %>%
+  ggplot(aes(coeff, term)) +
+  geom_vline(xintercept = 0) +
+  geom_errorbar(aes(xmin = conf.low, xmax = conf.high)) +
+  facet_wrap(vars(ID)) +
+ggtitle("Correlation of probe hit rate ~ attention")
 ```
 
-The $ATE$ of attention on probe hit rate with scene and subject level fixed effects
 
 ```{r}
-human_pd_by_design <- ate_data %>%
-  lm_robust(pbh ~ att_scored, fixed_effects = ~ scene + ID, data = .)
-  # lm_robust(pr ~ att_scored + tracker_to_origin, fixed_effects = ~ scene, data = .)
-summary(human_pd_by_design)
+fits <- cate_data %>%
+  ungroup() %>%
+  nest_by(ID) %>%
+  mutate(mod = list(iv_robust(high_att_design, data = data)))
+
+fits %>%
+  summarise(broom::tidy(mod)) %>%
+  filter(term == "high_attTRUE") %>%
+  mutate(conf.low = estimate - 1.92*std.error,
+         conf.high = estimate + 1.92*std.error) %>%
+  rename(coeff = estimate) %>%
+  ggplot(aes(coeff, term)) +
+  geom_vline(xintercept = 0) +
+  geom_errorbar(aes(xmin = conf.low, xmax = conf.high)) +
+  facet_wrap(vars(ID)) +
+ggtitle("Correlation of probe hit rate ~ attention")
 ```
 
+<!-- ## Only "good" subjects -->
 
-The $CATE$ of attention on probe hit rate with scene and subject level fixed effects
+<!-- ```{r} -->
+<!-- best_subjects_data <-  good_subjects_data %>% -->
+<!--   ungroup() %>% -->
+<!--   filter(ID %in% c("Participant_7", "Participant_8", "Participant_10")) -->
+
+<!--   # filter(ID %in% c("Participant_7", "Participant_8", "Participant_10")) %>% -->
+<!--   # left_join(exp_data) -->
+
+
+<!-- best_subjects_data %>% -->
+<!--   ggplot(aes(x = high_att, y = pbh)) +  -->
+<!--   geom_violin() -->
+
+<!-- best_subjects_data %>% -->
+<!--   iv_robust(zatt_design, data = .) %>% -->
+<!--   summary() -->
+
+<!-- fits <- best_subjects_data %>% -->
+<!--   nest_by(scene) %>% -->
+<!--   mutate(mod = list(iv_robust(zatt_design, data = data))) %>% -->
+<!--   summarise(broom::tidy(mod)) %>% -->
+<!--   filter(term == "zatt") %>% -->
+<!--   mutate(conf.low = estimate - 1.92*std.error, -->
+<!--          conf.high = estimate + 1.92*std.error) %>% -->
+<!--   rename(coeff = estimate) -->
+
+
+<!-- fits %>% -->
+<!--   ggplot(aes(coeff)) + -->
+<!--   geom_vline(xintercept = 0) + -->
+<!--   xlim(-1, 1) + -->
+<!--   geom_errorbarh(aes(y = 0, xmin = conf.low, xmax = conf.high)) + -->
+<!--   facet_wrap(vars(scene)) + -->
+<!--   ggtitle("Correlation of d-prime ~ attention") -->
+
+<!-- ``` -->
+
+## Only in high attention
 
 ```{r}
-human_pd_by_design <- cate_data %>%
-  lm_robust(pbh ~ att_scored, fixed_effects = ~ scene + ID, data = .)
-  # lm_robust(pr ~ att_scored + tracker_to_origin, fixed_effects = ~ scene, data = .)
-summary(human_pd_by_design)
+
+high_att_ate_data <- ate_data %>%
+  filter(att_scored_qtl == 4)
+
+```
+
+```{r}
+
+high_att_ate_data %>%
+ggplot(aes(x = att_scored, y = prop_att)) +
+  geom_point()
+```
+
+```{r}
+high_att_ate_design <- pbh ~ prop_att
+high_att_ate_data %>%
+  lm_robust(high_att_ate_design, fixed_effects = ~ scene + ID,
+            data = .) %>%
+  summary()
+high_att_ate_data %>%
+  lm_robust(zatt_design, fixed_effects = ~ scene + ID,
+            data = .) %>%
+  summary()
 ```
 
 
 
-<!-- ```{r} -->
-<!-- # human_pd_by_design <- ate_data %>% -->
-<!-- #   iv_robust(pbh ~ att_scored | zcrowding,  data = .) -->
-<!-- # summary(human_pd_by_design) -->
+## Lag and Lead analysis
 
-<!-- ``` -->
 
-<!-- ```{r} -->
+```{r}
 
-<!-- # crowd_to_att <- with(cate_data, -->
-<!-- #                      lm_robust(att_scored ~ zcrowding)) -->
-<!-- # crowd_to_pr <- with(cate_data, -->
-<!-- #                lm_robust(pr ~ zcrowding)) -->
-<!-- # summary(crowd_to_att) -->
-<!-- # summary(crowd_to_pr) -->
-<!-- # cate_data$res_att = cate_data$att_scored - crowd_to_att$fitted.values -->
-<!-- # cate_data$res_pr = cate_data$pr - crowd_to_att$fitted.values -->
-<!-- #  -->
-<!-- # res_att_to_pr <- with(cate_data, -->
-<!-- #                       lm_robust(res_pr ~ res_att)) -->
-<!-- # summary(res_att_to_pr) -->
-<!-- ``` -->
+lag_zatt_design <- gen_design("zatt_lag10", "pbh")
+lead_zatt_design <-gen_design("zatt_lead10", "pbh")
 
-<!-- ```{r} -->
-<!-- # fits <- cate_data %>% -->
-<!-- #   ungroup() %>% -->
-<!-- #   nest_by(scene, tracker) %>% -->
-<!-- #   mutate(mod = list(glm(pr ~ att, family = binomial(), data = data))) -->
-<!-- #   # mutate(mod = list(lm_robust(pr ~ att, data = data))) -->
-<!-- #  -->
-<!-- # fits %>% -->
-<!-- #   summarise(broom::tidy(mod)) %>% -->
-<!-- #   filter(term == "att") %>% -->
-<!-- #   mutate(conf.low = estimate - 1.92*std.error,  -->
-<!-- #          conf.high = estimate + 1.92*std.error) %>% -->
-<!-- #   select(-term) %>% -->
-<!-- #   rename(coeff = estimate) %>% -->
-<!-- #   ggplot(aes(factor(tracker), coeff)) + -->
-<!-- #   geom_hline(yintercept = 0) + -->
-<!-- #   # ylim(-4,4) + -->
-<!-- #   geom_errorbar(aes(ymin = conf.low, ymax = conf.high)) + -->
-<!-- #   facet_wrap(vars(scene)) + -->
-<!-- #   ggtitle("Correlation of probe accuracy ~ attention") -->
-<!-- ``` -->
+ate_data %>%
+  lm_robust(zatt_design, fixed_effects = ~ ID + scene,
+            data = .) %>%
+  summary()
+
+ate_data %>%
+  lm_robust(lag_zatt_design, fixed_effects = ~ ID + scene,
+            data = .) %>%
+  summary()
+
+ate_data %>%
+  lm_robust(lead_zatt_design, fixed_effects = ~ ID + scene,
+            data = .) %>%
+  summary()
+```
+
+## Cumulative attention analysis
+
+
+```{r}
+cum_att_design <- pbh ~ cum_att + tracker_to_tracker_mean + prop_att |  dist_to_nd + tracker_to_tracker_mean + prop_att
+
+
+ate_data %>%
+  lm_robust(zatt_design, fixed_effects = ~ scene + ID +tracker,
+            data = .) %>%
+  summary()
+
+ate_data %>%
+  lm_robust(cum_att_design, fixed_effects = ~ ID + scene + tracker,
+            data = .) %>%
+  summary()
+```
+
+```{r}
+
+ate_across_subjects %>%
+  ggplot(aes(x = att, y = d.prime)) +
+  geom_point()
+
+ate_across_subjects %>%
+  ggplot(aes(x = att_lag10, y = d.prime)) +
+  geom_point()
+
+ate_across_subjects %>%
+  ggplot(aes(x = att_lead10, y = d.prime)) +
+  geom_point()
+
+ate_across_subjects %>%
+  ggplot(aes(x = frame, y = d.prime)) +
+  geom_point(aes(color = factor(tracker))) + 
+  facet_wrap(vars(scene))
+
+ate_data %>%
+  group_by(scene) %>%
+  mutate(att_rank = dense_rank(att)) %>%
+  filter(pbh) %>%
+  ggplot(aes(x = as.integer(att_rank))) +
+  geom_bar() +
+  facet_wrap(vars(scene))
+```
