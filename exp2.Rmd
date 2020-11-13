@@ -1,0 +1,62 @@
+---
+title: "Exp 1"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+header-includes:
+ \usepackage{booktabs}
+ \usepackage{longtable}
+ \usepackage{array}
+ \usepackage{multirow}
+ \usepackage{wrapfig}
+ \usepackage{float}
+ \floatplacement{figure}{H}
+---
+
+# Setup
+
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(fig.pos = 'H',
+                      echo=TRUE, warning=FALSE, message=FALSE)
+
+```
+```{r , include=FALSE}
+library(tidyverse)
+library(estimatr)
+library(hexbin)
+library(ggplot2)
+library(readr)
+
+th <- theme_classic()
+theme_set(th)
+```
+
+load data (subject, exp, scenes)
+
+```{r echo=TRUE}
+subject_data <- read_csv("data/parsed_trials.csv") %>%
+  dplyr::select(-c(WID)) %>%
+  
+
+model_data <- read_csv("data/isr_inertia_480_attention.csv") %>%
+  mutate(compute = rowSums(dplyr::select(., starts_with("tracker")))) %>%
+  dplyr::select(-c(starts_with("tracker"))) %>%
+  rename(frame = t, scene = trial)
+
+model_smooth <- model_data %>%
+  nest_by(scene) %>%
+  mutate(compute = list(with(data, 
+                         ksmooth(frame, compute, kernel = "box", bandwidth = 10)))) %>%
+  mutate(smooth_x = list(compute$x),
+         compute = list(compute$y)) %>%
+  unnest(cols = c(data, smooth_x, compute))
+
+full_data <- left_join(subject_data, model_smooth)
+
+full_data %>%
+  ggplot() + 
+  geom_line(aes(x=frame, y=compute), color="red") +
+  geom_line(aes(x=frame, y=difficulty), color="blue") +
+  facet_wrap(vars(scene))
+```

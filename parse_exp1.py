@@ -15,6 +15,8 @@ from sqlalchemy import create_engine, MetaData, Table
 
 import pprint
 
+import scipy.stats
+import matplotlib.pyplot as plt
 
 
 # Mostly from http://psiturk.readthedocs.io/en/latest/retrieving.html
@@ -78,35 +80,36 @@ def classify(probe_timing, spacebar):
 def parse_row(row):
     # target designation
     td_acc = sum(row.Target[:4]) / 4.0
+    
+    FRAME_DURATION = 41.6667
+    N_FRAMES_CONV = 10 # number of frames to use to do a moving average
 
-    spacebar = np.array(row.Probe) # TODO change name saved to Spacebar
     diff_array = np.array(row.DifficultyArray)
-    print(diff_array)
-    return
-
-    FRAME_DURATION = 41.6667;
-
-    probes_classified = list(map(lambda x : classify(x, spacebar),
-                                 probe_timings))
-    probe_hits = list(map(any, probes_classified))
-    probe_fp_matrix = np.vstack(probes_classified)
-    probe_hit_count = np.logical_and.reduce(np.logical_not(probe_fp_matrix),
-                                            axis=0)
-    n_presses = len(spacebar)
-    template = {
-        'WID' : row.WID,
-        'scene' : row.TrialName[0],
-        'td_acc' : td_acc,
-        'probe_fp' : sum(probe_hit_count)/n_presses if n_presses else 0
-    }
-    cols = [ {'frame' : pf,
-              'tracker' : tr,
-              'pbh' : pbh,
-              **template}
-             for (pf,tr,pbh) in zip(probe_frames, probe_trackers,
-                                    probe_hits)]
-
-    return pd.DataFrame(cols)
+    times = [diff[0]/FRAME_DURATION for diff in diff_array]
+    diffs = [diff[1] for diff in diff_array]
+    print(times)
+    print(diffs)
+    difficulty = scipy.stats.binned_statistic(times, diffs, bins=480, range=(0,480))
+    difficulty = np.convolve(difficulty[0], np.ones((N_FRAMES_CONV,))/N_FRAMES_CONV, mode='same')
+    print(difficulty)
+    
+    plt.plot(range(1,481), difficulty)
+    plt.show()
+    
+    # SPACEBAR PRESSES CONVOLUTION
+    #spacebar = np.array(row.Probe) # TODO change name saved to Spacebar
+    #spacebar = spacebar / FRAME_DURATION
+    #spacebar = np.histogram(spacebar, bins=480, range=(0, 480))[0]
+    #spacebar = np.convolve(spacebar, np.ones((N_FRAMES_CONV,))/N_FRAMES_CONV, mode='same')
+    
+    df = pd.DataFrame()
+    df['frame'] = range(1, 481)
+    df['difficulty'] = difficulty * 10
+    df['WID'] = row.WID
+    df['scene'] = row.TrialName[0]
+    df['td_acc'] = td_acc
+    
+    return df
 
 
 def main():
@@ -118,12 +121,12 @@ def main():
                         default = 'data/participants.db')
     parser.add_argument("--table_name", type = str, default = "exp1_live",
                         help = 'Table name')
-    parser.add_argument("--exp_flag", type = str, nargs ='+', default = ["4.0"],
+    parser.add_argument("--exp_flag", type = str, nargs ='+', default = ["5.0"],
                         help = 'Experiment version flag')
     parser.add_argument("--mode", type = str, default = "debug",
                         choices = ['debug', 'sandbox', 'live'],
                         help = 'Experiment mode')
-    parser.add_argument("--trialsbyp", type = int, default = 120,
+    parser.add_argument("--trialsbyp", type = int, default = 40,
                         help = 'Number of trials expected per subject')
     parser.add_argument("--trialdata", type = str, default = 'data/parsed_trials.csv',
                         help = 'Filename to dump parsed trial data')
@@ -148,10 +151,12 @@ def main():
     trs = trs.merge(row_data, on = ['scene', 'WID'])
 
     # Make sure we have 120 observations per participant
-    trialsbyp = trs.WID.value_counts()
-    trialsbyp = trialsbyp[trialsbyp / 4 == args.trialsbyp]
+    trialsbyp = trs.WID.value_counts()/480
+    trialsbyp = trialsbyp[trialsbyp == args.trialsbyp]
     good_wids = trialsbyp.index
     trs = trs[trs.WID.isin(good_wids)]
+
+    print(trs)
 
     """Assign random identifiers to each participant"""
     wid_translate = {}
@@ -166,7 +171,8 @@ def main():
 
     cl_qs = qs[qs.WID.isin(good_wids)].copy()
     cl_qs["ID"] = cl_qs.WID.apply(lambda x: wid_translate[x])
-    cl_qs[["ID", "instructionloops", "comments"]].to_csv(args.questiondata, index=False)
+    # cl_qs[["ID", "instructionloops", "comments"]].to_csv(args.questiondata, index=False)
+    cl_qs[["ID", "comments"]].to_csv(args.questiondata, index=False)
 
 if __name__ == '__main__':
     main()
