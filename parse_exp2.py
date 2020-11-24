@@ -96,14 +96,15 @@ def parse_row(row, n_frames, frame_duration):
     # recreating the difficulty from spacebar presses
     spacebar = np.array(row.Probe) # TODO change name saved to Spacebar
     spacebar = spacebar / frame_duration
-
-    DIFF_BORDER_TIME = frame_duration;
-    DIFF_UP = 0.25; # how much difficulty goes up when SPACEBAR pressed
-    DIFF_DOWN = 0.05; # adjusted to match...
     
-    # adjusted to match
-    # (the question is how quickly is the border ACTUALLY updating)
-    #DIFF_BORDER_TIME = frame_duration
+    # actually, this doesn't matter too much:
+    # further scaling and smoothing can be done in R
+    DIFF_BORDER_TIME = frame_duration;
+    # DIFF_UP = 0.3; # how much difficulty goes up when SPACEBAR pressed
+    # DIFF_DOWN = 0.05; # adjusted to match...
+
+    DIFF_DOWN = 0.06 # how much difficulty goes down automatically within DIFF_BORDER_TIME
+    DIFF_UP = 0.3 # how much difficulty goes up when SPACEBAR pressed
 
     difficulty = 0.0
     difficulty_array = []
@@ -117,9 +118,8 @@ def parse_row(row, n_frames, frame_duration):
         difficulty = max(difficulty - DIFF_DOWN * frame_duration / DIFF_BORDER_TIME, 0.0)
         difficulty_array.append(difficulty)
     
-    print(len(difficulty_array))
-    plt.plot(range(1,n_frames+1), difficulty_array)
-    plt.show()
+    #plt.plot(range(1,n_frames+1), difficulty_array)
+    #plt.show()
     
     df = pd.DataFrame()
     df['frame'] = range(1, n_frames+1)
@@ -140,7 +140,7 @@ def main():
                         default = 'data/participants.db')
     parser.add_argument("--table_name", type = str, default = "exp1_live",
                         help = 'Table name')
-    parser.add_argument("--exp_flag", type = str, nargs ='+', default = ["5.01"],
+    parser.add_argument("--exp_flag", type = str, nargs ='+', default = ["5.02"],
                         help = 'Experiment version flag')
     parser.add_argument("--mode", type = str, default = "debug",
                         choices = ['debug', 'sandbox', 'live'],
@@ -171,8 +171,6 @@ def main():
     row_data = pd.concat(trs.apply(parse_row, axis=1, args=(args.n_frames, args.frame_duration)).tolist())
     trs = trs[['scene', 'WID', 'RT', 'condition', 'TrialOrder']]
     trs = trs.merge(row_data, on = ['scene', 'WID'])
-
-    print(trs)
 
     # Make sure we have a certain number of trials per participant
     trialsbyp = trs.WID.value_counts()/args.n_frames
