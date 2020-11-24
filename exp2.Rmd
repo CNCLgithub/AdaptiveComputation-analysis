@@ -1,5 +1,5 @@
 ---
-title: "Exp 1"
+title: "Exp 2"
 output:
   pdf_document: default
   html_document:
@@ -35,28 +35,112 @@ theme_set(th)
 load data (subject, exp, scenes)
 
 ```{r echo=TRUE}
+
+frame_min <- 50
+frame_max <- 430
+lead_n <- 24 # how many frames to shift subject data to the left
+
 subject_data <- read_csv("data/parsed_trials.csv") %>%
   dplyr::select(-c(WID)) %>%
-  
+  group_by(scene) %>%
+  mutate(lead_diff = dplyr::lead(difficulty, n=lead_n)) %>%
+  ungroup() %>%
+  filter(frame > frame_min,
+         frame < frame_max)
 
 model_data <- read_csv("data/isr_inertia_480_attention.csv") %>%
   mutate(compute = rowSums(dplyr::select(., starts_with("tracker")))) %>%
   dplyr::select(-c(starts_with("tracker"))) %>%
   rename(frame = t, scene = trial)
 
+
+left_join(subject_data, model_data) %>%
+  group_by(scene) %>%
+  ggplot() +
+  geom_line(aes(x=frame, y=compute, color="compute")) +
+  geom_line(aes(x=frame, y=lead_diff*50, color=factor(ID))) +
+  facet_wrap(vars(scene))
+```
+
+
+Data smoothing
+
+```{r}
+model_smoothing <- 12
+subject_smoothing <- 12
+
+# s_diff - smooth difficulty
+subject_smooth <- subject_data %>%
+  nest_by(scene) %>%
+  mutate(s_diff_xy = list(with(data, 
+                          ksmooth(frame, lead_diff, kernel = "normal", bandwidth = subject_smoothing)))) %>%
+  mutate(s_diff = list(s_diff_xy$y)) %>%
+  unnest(cols = c(data, s_diff)) %>%
+  dplyr::select(-c(s_diff_xy)) %>%
+  group_by(ID) %>%
+  mutate(z_diff = scale(s_diff)) %>%
+  ungroup() %>%
+  group_by(scene, frame) %>%
+  mutate(z_diff_mu = mean(z_diff)) %>%
+  ungroup()
+
+# s_comp - smooth compute
 model_smooth <- model_data %>%
   nest_by(scene) %>%
-  mutate(compute = list(with(data, 
-                         ksmooth(frame, compute, kernel = "box", bandwidth = 10)))) %>%
-  mutate(smooth_x = list(compute$x),
-         compute = list(compute$y)) %>%
-  unnest(cols = c(data, smooth_x, compute))
+  mutate(s_comp_xy = list(with(data,
+                          ksmooth(frame, compute, kernel = "normal", bandwidth = model_smoothing)))) %>%
+  mutate(s_comp = list(s_comp_xy$y)) %>%
+  unnest(cols = c(data, s_comp)) %>%
+  dplyr::select(-c(s_comp_xy)) %>%
+  mutate(z_comp = scale(s_comp))
 
-full_data <- left_join(subject_data, model_smooth)
+left_join(subject_smooth, model_smooth) %>%
+  ggplot() +
+  geom_line(aes(x=frame, y=z_comp, color="compute")) +
+  geom_line(aes(x=frame, y=z_diff, color=factor(ID))) +
+  facet_wrap(vars(scene))
+```
+
+
+```{r}
+full_data <- left_join(subject_smooth, model_smooth) %>%
+  group_by(scene, ID) %>%
+  mutate(cum_diff = cumsum(z_diff),
+         cum_diff_mu = cumsum(z_diff_mu),
+         cum_comp = cumsum(z_comp)) %>%
+  ungroup()
 
 full_data %>%
   ggplot() + 
-  geom_line(aes(x=frame, y=compute), color="red") +
-  geom_line(aes(x=frame, y=difficulty), color="blue") +
+  geom_line(aes(x=frame, y=cum_comp, color="compute")) +
+  geom_line(aes(x=frame, y=cum_diff_mu, color="mean_diff")) +
+  geom_line(aes(x=frame, y=cum_diff, color=factor(ID))) +
   facet_wrap(vars(scene))
+```
+```{r}
+correlations <- full_data %>%
+  group_by(scene) %>%
+  dplyr::summarise(corr=cor(cum_diff_mu, cum_comp, method="pearson")) %>%
+  ungroup()
+correlations
+
+cor.test(full_data$cum_diff_mu, full_data$cum_comp, method="pearson")
+```
+
+
+Permutation test
+```{r}
+nperm <- 1000
+
+x <- full_data$cum_diff_mu
+y <- full_data$cum_comp
+
+r.obs <- cor(x, y)
+P.par <- cor.test(x, y)$p.value
+r.per <- replicate(nperm, expr = cor (x, sample(y)))
+summary(r.per)
+
+hist(r.per, xlim = c(-1,1))
+abline (v = correlations$corr, col = 'red')
+
 ```
