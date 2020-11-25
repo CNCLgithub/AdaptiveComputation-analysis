@@ -27,6 +27,7 @@ library(estimatr)
 library(hexbin)
 library(ggplot2)
 library(readr)
+library(zoo)
 
 th <- theme_classic()
 theme_set(th)
@@ -38,100 +39,80 @@ load data (subject, exp, scenes)
 
 # TODO how should we choose the limits
 frame_min <- 1 # the first couple of seconds of behavior are perhaps not great
-frame_max <- 480
+frame_max <- 460
 
 # TODO how do we choose the lead
-lead_n <- 12 # how many frames to shift subject data to the left
+lead_n <- 16 # how many frames to shift subject data to the left
 
 # TODO do we control for td_acc == 1
 subject_data <- read_csv("data/parsed_trials.csv") %>%
   dplyr::select(-c(WID)) %>%
-  # group_by(scene) %>%
-  # mutate(td_acc_mu = mean(td_acc)) %>%
-  # ungroup() %>%
-  # filter(td_acc_mu == 1.0) %>%
   group_by(scene, ID) %>%
   arrange(frame) %>%
-  mutate(lead_diff = dplyr::lead(difficulty, n=lead_n),
-         norm_presses = presses / last(presses)) %>%
+  mutate(presses = lead(presses, lead_n)) %>%
   ungroup() %>%
-  filter(frame > frame_min,
-         frame < frame_max)
+  filter(frame >= frame_min,
+         frame <= frame_max)
 
 model_data <- read_csv("data/isr_inertia_480_attention.csv") %>%
   mutate(compute = rowSums(dplyr::select(., starts_with("tracker")))) %>%
   dplyr::select(-c(starts_with("tracker"))) %>%
   rename(frame = t, scene = trial) %>%
-  filter(frame > frame_min,
-         frame < frame_max)
+  filter(frame >= frame_min,
+         frame <= frame_max)
 
 
 left_join(subject_data, model_data) %>%
   group_by(scene) %>%
   ggplot() +
   geom_line(aes(x=frame, y=compute, color="compute")) +
-  geom_line(aes(x=frame, y=lead_diff*30, color=factor(ID))) +
-  facet_wrap(vars(scene))
-
-left_join(subject_data, model_data) %>%
-  group_by(scene) %>%
-  ggplot() +
-  # geom_line(aes(x=frame, y=compute, color="compute")) +
-  geom_line(aes(x=frame, y=norm_presses, color=factor(ID))) +
+  geom_line(aes(x=frame, y=presses, color=factor(ID))) +
   facet_wrap(vars(scene))
 ```
 Let's look at scatter plot of compute vs. difficulty:
 ```{r}
 sum_compute_diff <- left_join(subject_data, model_data) %>%
-  mutate(c = compute) %>%
   group_by(ID) %>%
-  mutate(d = scale(lead_diff)) %>%
-  # mutate(d = lead_diff) %>%
+  mutate(sum_diff = sum(presses)) %>%
   group_by(scene, ID) %>%
-  mutate(comp_scene_sum = sum(c),
-         diff_scene_sum = sum(d)) %>%
+  mutate(scene_sum_diff = sum(presses)/sum_diff,
+         scene_sum_comp = sum(compute)) %>%
   ungroup() %>%
   group_by(scene) %>%
-  mutate(diff_scene_sum_mu = mean(diff_scene_sum)) %>%
+  mutate(scene_sum_diff_mu = mean(scene_sum_diff)) %>%
   ungroup()
 
-# individual correlations
-# correlations <- sum_compute_diff %>%
-#   group_by(ID) %>%
-#   summarise(corr=cor(comp_scene_sum, diff_scene_sum, method="pearson"),
-#             p.value=cor.test(comp_scene_sum, diff_scene_sum, method="pearson")$p.value) %>%
-#   ungroup()
-# correlations
+#individual correlations
+correlations <- sum_compute_diff %>%
+  group_by(ID) %>%
+  summarise(corr=cor(scene_sum_diff, scene_sum_comp, method="pearson"),
+            p.value=cor.test(scene_sum_diff, scene_sum_comp, method="pearson")$p.value) %>%
+  ungroup()
+correlations
 
-# average subject correlation
-# sum_compute_diff %>%
-#   summarise(corr=cor(comp_scene_sum, diff_scene_sum_mu),
-#             p.value=cor.test(comp_scene_sum, diff_scene_sum_mu)$p.value)
-# 
-# 
-# sum_compute_diff %>%
-#   ggplot() +
-#   geom_point(aes(x=comp_scene_sum, y=diff_scene_sum, color=factor(ID))) +
-#   geom_point(shape=23, size=5, aes(x=comp_scene_sum, y=diff_scene_sum_mu, color="average Participant"))
+#average subject correlation
+sum_compute_diff %>%
+  summarise(corr=cor(scene_sum_comp, scene_sum_diff_mu),
+            p.value=cor.test(scene_sum_comp, scene_sum_diff_mu)$p.value)
+
+
+sum_compute_diff %>%
+  ggplot() +
+  geom_point(aes(x=scene_sum_comp, y=scene_sum_diff, color=factor(ID))) +
+  geom_point(shape=23, size=5, aes(x=scene_sum_comp, y=scene_sum_diff_mu, color="average Participant"))
 ```
 
 Data smoothing
 
 ```{r}
-model_smoothing <- 1
-subject_smoothing <- 1
+model_smoothing <- 6
+subject_smoothing <- 36
 
 # s_diff - smooth difficulty
 subject_smooth <- subject_data %>%
-  nest_by(scene, ID) %>%
-  mutate(s_diff_xy = list(with(data, 
-                          ksmooth(frame, lead_diff, kernel = "normal", bandwidth = subject_smoothing)))) %>%
-  mutate(s_diff = list(s_diff_xy$y)) %>%
-  unnest(cols = c(data, s_diff)) %>%
-  dplyr::select(-c(s_diff_xy)) %>%
-  # group_by(scene, ID) %>%
   group_by(ID, scene) %>%
-  mutate(z_diff = scale(s_diff)) %>%
+  mutate(f_diff = rollsum(presses, subject_smoothing, fill = 0),
+         z_diff = scale(f_diff)) %>%
   ungroup() %>%
   group_by(scene, frame) %>%
   mutate(z_diff_mu = mean(z_diff)) %>%
@@ -156,28 +137,23 @@ model_smooth <- model_data %>%
 left_join(subject_smooth, model_smooth) %>%
   ggplot() +
   geom_line(aes(x=frame, y=z_comp, color="compute")) +
-  geom_line(aes(x=frame, y=z_diff, color=factor(ID))) +
+    geom_line(aes(x=frame, y=z_diff, color=factor(ID)), alpha=0.2) +
+    geom_line(aes(x=frame, y=z_diff_mu, color="mean difficulty")) +
+
   facet_wrap(vars(scene))
 
 full_data <- left_join(subject_smooth, model_smooth) %>%
   group_by(scene, ID) %>%
   mutate(cum_diff = cumsum(z_diff),
          cum_diff_mu = cumsum(z_diff_mu),
-         cum_comp = cumsum(s_comp),
-         cum_comp = cum_comp/last(cum_comp)) %>%
+         cum_comp = cumsum(z_comp)) %>%
   ungroup()
 
 full_data %>%
   ggplot() + 
   geom_line(aes(x=frame, y=cum_comp, color="compute")) +
+    geom_line(aes(x=frame, y=cum_diff, color=factor(ID)), linetype = "dashed", alpha = 0.2) +
   geom_line(aes(x=frame, y=cum_diff_mu, color="mean_diff")) +
-  geom_line(aes(x=frame, y=cum_diff, color=factor(ID)), linetype = "dashed") +
-  facet_wrap(vars(scene))
-
-full_data %>%
-  ggplot() + 
-  geom_line(aes(x=frame, y=cum_comp, color="compute")) +
-  geom_line(aes(x=frame, y=norm_presses, color=factor(ID))) +
   facet_wrap(vars(scene))
 ```
 ```{r}
