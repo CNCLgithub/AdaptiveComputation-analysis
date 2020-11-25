@@ -107,23 +107,30 @@ def parse_row(row, n_frames, frame_duration):
     DIFF_UP = 0.3 # how much difficulty goes up when SPACEBAR pressed
 
     difficulty = 0.0
+    presses = 0
     difficulty_array = []
+    presses_array = []
     for frame in range(1, n_frames+1):
         # for every spacebar press in that timestep, increase difficulty
         n_ups = sum((spacebar >= frame-1) & (spacebar < frame))
+        presses += n_ups
+
         for i in range(n_ups):
             difficulty = min(difficulty + DIFF_UP, 1.0)
+            #difficulty = difficulty + DIFF_UP
 
         # decrease difficulty every frame
         difficulty = max(difficulty - DIFF_DOWN * frame_duration / DIFF_BORDER_TIME, 0.0)
         difficulty_array.append(difficulty)
+        presses_array.append(presses)
     
-    #plt.plot(range(1,n_frames+1), difficulty_array)
-    #plt.show()
+    # plt.plot(range(1,n_frames+1), presses_array)
+    # plt.show()
     
     df = pd.DataFrame()
     df['frame'] = range(1, n_frames+1)
     df['difficulty'] = difficulty_array
+    df['presses'] = presses_array
     df['WID'] = row.WID
     df['scene'] = row.TrialName[0]
     df['td_acc'] = td_acc
