@@ -33,13 +33,13 @@ th <- theme_classic()
 theme_set(th)
 ```
 
-load data (subject, exp, scenes)
+Load subject data
 
 ```{r echo=TRUE}
 
 # TODO how should we choose the limits
-frame_min <- 1 # the first couple of seconds of behavior are perhaps not great
-frame_max <- 460
+# frame_min <- 50 # the first couple of seconds of behavior are perhaps not great
+# frame_max <- 420
 
 # TODO how do we choose the lead
 lead_n <- 16 # how many frames to shift subject data to the left
@@ -51,32 +51,80 @@ subject_data <- read_csv("data/parsed_trials.csv") %>%
   arrange(frame) %>%
   mutate(presses = lead(presses, lead_n)) %>%
   ungroup() %>%
-  filter(frame >= frame_min,
-         frame <= frame_max)
+  filter(frame < last(frame) - lead_n) # making sure not to have NAs at the end
+```
+
+Screning BAD subjects
+
+```{r}
+
+perf_thresh = 3.0
+scenes_pressed_thresh = 0.5
+
+# arbitrary threshold for how many presses a subject should do within a scene
+# TODO make less arbitrary
+presses_threshold_min = 10
+presses_threshold_max = 200
+
+subject_performance <- subject_data %>%
+  group_by(ID, scene) %>%
+  mutate(scene_pressed = sum(presses) > 0) %>%
+  ungroup() %>%
+  group_by(ID) %>%
+  summarise(td_acc_mu = mean(td_acc),
+            n = n(),
+            scenes_pressed = sum(scene_pressed)/n,
+            td_acc_se = sd(td_acc)/sqrt(n/3),
+            ID_passed = abs(td_acc_mu - 0.5) > perf_thresh*td_acc_se & scenes_pressed > scenes_pressed_thresh)
+
+subject_presses <- subject_data %>%
+  group_by(scene, ID) %>%
+  summarize(presses_scene_sum = sum(presses),
+            pressed_scene = presses_scene_sum > presses_threshold_min &
+                            presses_scene_sum < presses_threshold_max)
+
+left_join(subject_presses, subject_performance) %>%
+  filter(ID_passed) %>%
+  ggplot() +
+  xlim(0, 150) +
+  geom_histogram(aes(x=presses_scene_sum)) +
+  facet_wrap(vars(ID))
+
+# TODO? td_pass_scene = td_acc == 1.0
+
+good_subject_data <- left_join(subject_presses, subject_performance) %>%
+  filter(ID_passed, pressed_scene) %>%
+  left_join(subject_data) %>%
+  select(-c(ID_passed, pressed_scene))
+```
+
+Loading model data
+
+```{r}
 
 model_data <- read_csv("data/isr_inertia_480_attention.csv") %>%
   mutate(compute = rowSums(dplyr::select(., starts_with("tracker")))) %>%
   dplyr::select(-c(starts_with("tracker"))) %>%
-  rename(frame = t, scene = trial) %>%
-  filter(frame >= frame_min,
-         frame <= frame_max)
+  rename(frame = t, scene = trial)
 
 
-left_join(subject_data, model_data) %>%
-  group_by(scene) %>%
+left_join(good_subject_data, model_data) %>%
   ggplot() +
   geom_line(aes(x=frame, y=compute, color="compute")) +
   geom_line(aes(x=frame, y=presses, color=factor(ID))) +
   facet_wrap(vars(scene))
 ```
+
+
 Let's look at scatter plot of compute vs. difficulty:
 ```{r}
-sum_compute_diff <- left_join(subject_data, model_data) %>%
+sum_compute_diff <- left_join(good_subject_data, model_data) %>%
   group_by(ID) %>%
   mutate(sum_diff = sum(presses)) %>%
   group_by(scene, ID) %>%
-  mutate(scene_sum_diff = sum(presses)/sum_diff,
-         scene_sum_comp = sum(compute)) %>%
+  mutate(scene_sum_diff = sum(presses)/sum_diff) %>%
+  group_by(scene) %>%
+  mutate(scene_sum_comp = sum(compute)) %>%
   ungroup() %>%
   group_by(scene) %>%
   mutate(scene_sum_diff_mu = mean(scene_sum_diff)) %>%
@@ -105,17 +153,18 @@ sum_compute_diff %>%
 Data smoothing
 
 ```{r}
-model_smoothing <- 6
-subject_smoothing <- 36
+model_smoothing <- 24
+subject_smoothing <- 6
 
 # s_diff - smooth difficulty
-subject_smooth <- subject_data %>%
+subject_smooth <- good_subject_data %>%
   group_by(ID, scene) %>%
-  mutate(f_diff = rollsum(presses, subject_smoothing, fill = 0),
-         z_diff = scale(f_diff)) %>%
-  ungroup() %>%
+  mutate(z_diff = scale(presses),
+         z_diff_rs = rollsum(z_diff, subject_smoothing, fill = 0)) %>%
+  filter(frame >= subject_smoothing,
+         frame <= max(frame) - subject_smoothing) %>%
   group_by(scene, frame) %>%
-  mutate(z_diff_mu = mean(z_diff)) %>%
+  mutate(z_diff_rs_mu = mean(z_diff_rs)) %>%
   ungroup()
 
 # s_comp - smooth compute
@@ -135,24 +184,24 @@ model_smooth <- model_data %>%
 
 ```{r}
 left_join(subject_smooth, model_smooth) %>%
+  filter(scene == 18) %>%
   ggplot() +
   geom_line(aes(x=frame, y=z_comp, color="compute")) +
-    geom_line(aes(x=frame, y=z_diff, color=factor(ID)), alpha=0.2) +
-    geom_line(aes(x=frame, y=z_diff_mu, color="mean difficulty")) +
-
+    geom_line(aes(x=frame, y=z_diff_rs, color=factor(ID)), alpha=0.2) +
+    geom_line(aes(x=frame, y=z_diff_rs_mu, color="mean difficulty")) +
   facet_wrap(vars(scene))
 
 full_data <- left_join(subject_smooth, model_smooth) %>%
   group_by(scene, ID) %>%
-  mutate(cum_diff = cumsum(z_diff),
-         cum_diff_mu = cumsum(z_diff_mu),
+  mutate(cum_diff = cumsum(z_diff_rs),
+         cum_diff_mu = cumsum(z_diff_rs_mu),
          cum_comp = cumsum(z_comp)) %>%
   ungroup()
 
 full_data %>%
   ggplot() + 
   geom_line(aes(x=frame, y=cum_comp, color="compute")) +
-    geom_line(aes(x=frame, y=cum_diff, color=factor(ID)), linetype = "dashed", alpha = 0.2) +
+    geom_line(aes(x=frame, y=cum_diff, color=factor(ID)), linetype = "dashed", alpha = 0.4) +
   geom_line(aes(x=frame, y=cum_diff_mu, color="mean_diff")) +
   facet_wrap(vars(scene))
 ```
@@ -180,6 +229,7 @@ r.per <- replicate(nperm, expr = cor (x, sample(y)))
 summary(r.per)
 
 hist(r.per, xlim = c(-1,1))
-abline (v = correlations$corr, col = 'red')
+abline (v = r.obs, col = 'red')
+abline (v = correlations, col = 'green')
 
 ```
