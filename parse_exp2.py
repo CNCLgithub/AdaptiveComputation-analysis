@@ -80,27 +80,47 @@ def classify(probe_timing, spacebar):
     return np.logical_and(ds >= 0, ds <= PROBE_WINDOW)
 
 def parse_row(row, n_frames, frame_duration):
+
     # target designation
     td_acc = sum(row.Target[:4]) / 4.0
 
     # TODO make it sleek
     # difficulty = scipy.stats.binned_statistic(times, diffs, statistic='mean', bins=n_frames, range=(0,n_frames))[0]
-    
+
     spacebar = np.array(row.Probe) # TODO change name saved to Spacebar
     spacebar = spacebar / frame_duration
-    
+        
+
+    # recording raw presses for each frame
     presses_array = []
+    
+    # recreating the continuous difficulty
+    # that participants observed through border feedback
+    FRAME_DURATION = 41.6667
+    DIFF_BORDER_TIME = FRAME_DURATION
+    DIFF_DOWN = 0.06 # how much difficulty goes down automatically within DIFF_BORDER_TIME
+    DIFF_UP = 0.3 # how much difficulty goes up when SPACEBAR pressed
+
+    difficulty_array = []
+    difficulty = 0.0
     for frame in range(1, n_frames+1):
         # for every spacebar press in that timestep, increase difficulty
         n_ups = sum((spacebar >= frame-1) & (spacebar < frame))
         presses_array.append(n_ups)
+
+        difficulty = max(0.0, difficulty - DIFF_DOWN)
+        for _ in range(n_ups):
+            difficulty = min(1.0, difficulty + DIFF_UP)
+        difficulty_array.append(difficulty)
     
-    plt.plot(range(1,n_frames+1), presses_array)
-    plt.show()
+    # plt.plot(range(1,n_frames+1), difficulty_array)
+    # plt.show()
+
     
     df = pd.DataFrame()
     df['frame'] = range(1, n_frames+1)
     df['presses'] = presses_array
+    df['difficulty'] = difficulty_array
     df['WID'] = row.WID
     df['scene'] = row.TrialName[0]
     df['td_acc'] = td_acc
@@ -128,8 +148,8 @@ def main():
                         help = 'Filename to dump parsed trial data')
     parser.add_argument("--questiondata", type = str, default = 'data/parsed_questions.csv',
                         help = 'Filename to dump parsed trial data')
-    parser.add_argument("--n_frames", type = int, default = 490,
-                        help = 'How many frames to extract from behavioral data, behavioral recording seems to lag a bit so 490 > actual 480 frames of the scene')
+    parser.add_argument("--n_frames", type = int, default = 500,
+                        help = 'How many frames to extract from behavioral data, behavioral recording seems to lag a bit, so 490 > actual 480 frames of the scene')
     parser.add_argument("--frame_duration", type = float, default = 41.6667,
                         help = 'The duration of one frame in milliseconds')
 
@@ -165,6 +185,8 @@ def main():
     trs["ID"] = trs.WID.apply(lambda x: wid_translate[x])
 
     # trs = trs.drop('WID', 1)
+
+    print(trs)
 
     trs.to_csv(args.trialdata, index=False)
 
