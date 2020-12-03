@@ -81,7 +81,8 @@ subject_presses <- subject_data %>%
   group_by(scene, ID) %>%
   summarize(presses_scene_sum = sum(presses),
             pressed_scene = presses_scene_sum > presses_threshold_min &
-                            presses_scene_sum < presses_threshold_max)
+                            presses_scene_sum < presses_threshold_max) %>%
+  ungroup()
 
 left_join(subject_presses, subject_performance) %>%
   filter(ID_passed) %>%
@@ -91,7 +92,7 @@ left_join(subject_presses, subject_performance) %>%
 
 # TODO? td_pass_scene = td_acc == 1.0
 
-good_subject_data <- left_join(subject_diff, subject_performance) %>%
+good_subject_data <- left_join(subject_presses, subject_performance) %>%
   filter(ID_passed, pressed_scene) %>%
   left_join(subject_data) %>%
   select(-c(ID_passed, pressed_scene))
@@ -146,38 +147,18 @@ Data smoothing
 ```{r}
 model_smoothing <- 36
 subject_smoothing <- 36
-lead_n <- 24
+lead_n <- 20
 
 max_smoothing <- max(model_smoothing, subject_smoothing)
 
 # s_diff - smooth difficulty
 subject_smooth <- good_subject_data %>%
-  group_by(ID, scene) %>%
-  summarise(total_diff = sum(diff)) %>%
   group_by(ID) %>%
-  summarise(total_diff_mu = mean(total_diff)) %>%
+  summarise(diff_sum = sum(diff)) %>%
   right_join(good_subject_data, by="ID") %>%
-  mutate(diff_rs = rollsum(diff, subject_smoothing, fill = 0),
-         diff_agg = diff/total_diff_mu) %>%
+  mutate(diff_norm = diff/diff_sum) %>%
   ungroup() %>%
-  group_by(scene, frame) %>%
-  summarise(diff_agg_se = sd(diff_agg)/sqrt(n()),
-            diff_agg = mean(diff_agg),
-            conf_low = diff_agg - 3 * diff_agg_se,
-            conf_high = diff_agg + 3 * diff_agg_se) %>%
-  ungroup() %>%
-  nest_by(scene) %>%
-  mutate(diff_agg_s_xy = list(with(data,
-                            ksmooth(frame, diff_agg, kernel = "normal", bandwidth = subject_smoothing)))) %>%
-  mutate(diff_agg_s = list(diff_agg_s_xy$y)) %>%
-  unnest(cols = c(data, diff_agg_s)) %>%
-  dplyr::select(-c(diff_agg_s_xy)) %>%
-  group_by(scene) %>%
-  mutate(diff_agg = lead(diff_agg, lead_n)) %>%
-  filter(frame >= max_smoothing,
-         frame <= max(frame) - max_smoothing - lead_n) %>%
-  mutate(diff_agg = diff_agg_s/max(diff_agg_s)) %>%
-  ungroup()
+  select(ID, scene, frame, diff_norm)
 
 
 # s_comp - smooth compute
@@ -191,10 +172,135 @@ model_smooth <- model_data %>%
   filter(frame >= max_smoothing,
          frame <= max(frame) - max_smoothing) %>%
   group_by(scene) %>%
-  mutate(comp = s_comp/max(s_comp)) %>%
+  mutate(comp = (s_comp - min(s_comp))/(max(s_comp) - min(s_comp)),
+         comp_z = scale(s_comp),
+         comp_cum = cumsum(comp),
+         comp_cum = comp_cum/max(comp_cum)) %>%
   ungroup()
 ```
 
+
+
+Bootstrapping prep
+
+```{r}
+# number of subjects for one bootstrap operation
+n_subjects = 20
+
+# sample
+sample_subject_data <- function() {
+  sampled_IDs = sample(unique(subject_smooth$ID), n_subjects, replace=TRUE)
+  
+  data <- subject_smooth %>%
+    filter(ID == sampled_IDs[1])
+  
+  for (id in sampled_IDs[2:n_subjects]) {
+    data <- subject_smooth %>%
+      filter(ID == id) %>%
+      bind_rows(data)
+  }
+  data  
+}
+
+# make one average subject by aggregating subject data
+agg_subject_data <- function(data) {
+  data %>%
+    group_by(scene, frame) %>%
+    summarise(diff_agg = mean(diff_norm)) %>%
+    ungroup() %>%
+    
+    nest_by(scene) %>%
+    mutate(diff_s_xy = list(with(data,
+                                 ksmooth(frame, diff_agg, kernel = "normal", bandwidth = subject_smoothing)))) %>%
+    mutate(diff_s = list(diff_s_xy$y)) %>%
+    unnest(cols = c(data, diff_s)) %>%
+    dplyr::select(-c(diff_s_xy)) %>%
+    
+    group_by(scene) %>%
+    mutate(diff_s = lead(diff_s, lead_n)) %>%
+    filter(frame >= max_smoothing,
+           frame <= max(frame) - max_smoothing - lead_n) %>%
+    ungroup() %>%
+    
+    group_by(scene) %>%
+    mutate(diff_agg = (diff_s - min(diff_s))/(max(diff_s)-min(diff_s)),
+           diff_z = scale(diff_s),
+           diff_cum = cumsum(diff_agg),
+           diff_cum = diff_cum/max(diff_cum)) %>%
+    ungroup()
+}
+```
+
+Testing bootstrap prep
+
+```{r}
+s <- sample_subject_data()
+a <- agg_subject_data(s)
+
+left_join(a, model_smooth) %>%
+  # filter(scene == 3) %>%
+  ggplot(aes(x=frame)) +
+  geom_line(aes(y=comp_z, color="compute")) +
+  geom_line(aes(y=diff_z, color="mean difficulty")) +
+  facet_wrap(vars(scene))
+
+left_join(a, model_smooth) %>%
+  ggplot() +
+  geom_density_2d_filled(aes(x=comp, y=diff_agg))
+
+```
+
+
+Bootstrapping
+
+```{r}
+
+# we run the outer loop 1000 times
+n_iters <- 100
+n_scenes <- max(subject_smooth$scene)
+
+bootstrap <- function(data) {
+  s <- sample_subject_data()
+  a <- agg_subject_data(s)
+  combined_data <- left_join(a, model_smooth)
+  
+  # calculating the mean correlation along the scenes
+  # for our hypothesis
+  h1 <- combined_data %>%
+    group_by(scene) %>%
+    summarise(h1_corr = cor(comp_z, diff_z)) %>%
+    summarise(h1_corr = mean(h1_corr)) %>%
+    pull(h1_corr)
+  
+  scenes_permuted <- sample(n_scenes, n_scenes)
+  null_vector = vector(,n_scenes)
+  for (i in seq_along(scenes_permuted)) {
+    x <- combined_data %>%
+      filter(scene == i) %>%
+      pull(comp_z)
+    
+    y <- combined_data %>%
+      filter(scene == scenes_permuted[i]) %>%
+      pull(diff_z)
+    
+    null_vector[i] <- cor(x,y)
+  }
+  null <- mean(null_vector)
+  
+  data.frame(h1 = h1, null = null)
+}
+
+correlation_data <- bootstrap()
+for (i in seq(n_iters-1)) {
+  correlation_data <- correlation_data %>%
+    bind_rows(bootstrap())
+}
+
+correlation_data %>%
+  ggplot() +
+  geom_histogram(aes(x=h1, color="h1")) +
+  geom_histogram(aes(x=null, color="null"))
+```
 
 ```{r}
 left_join(subject_smooth, model_smooth) %>%
