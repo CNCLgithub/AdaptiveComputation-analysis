@@ -36,21 +36,21 @@ theme_set(th)
 Load subject data
 
 ```{r echo=TRUE}
-
 model_data <- read_csv("data/isr_inertia_480_attention.csv") %>%
   mutate(compute = rowSums(dplyr::select(., starts_with("tracker")))) %>%
   dplyr::select(-c(starts_with("tracker"))) %>%
   rename(frame = t, scene = trial)
 
-min_frame = 36 # beginning is unreliable for difficulty
+min_frame = 1 # beginning may be unreliable for difficulty
 max_frame = 480
 
 # TODO do we control for td_acc == 1
 subject_data <- read_csv("data/parsed_trials.csv") %>%
   dplyr::select(-c(WID)) %>%
+  arrange(ID, scene, frame) %>%
   rename(diff = difficulty) %>% # either choose raw presses or recreated continuous difficulty
   filter(frame >= min_frame,
-         frame <= min(max_frame, max(frame) - lead_n)) # making sure not to have NAs at the end
+         frame <= max_frame) # making sure not to have NAs at the end
 
 ```
 
@@ -185,7 +185,7 @@ Bootstrapping prep
 
 ```{r}
 # number of subjects for one bootstrap operation
-n_subjects = 20
+n_subjects = 10
 
 # sample
 sample_subject_data <- function() {
@@ -206,8 +206,7 @@ sample_subject_data <- function() {
 agg_subject_data <- function(data) {
   data %>%
     group_by(scene, frame) %>%
-    summarise(diff_agg = mean(diff_norm)) %>%
-    ungroup() %>%
+    summarise(diff_agg = mean(diff_norm), .groups="drop") %>%
     
     nest_by(scene) %>%
     mutate(diff_s_xy = list(with(data,
@@ -223,10 +222,11 @@ agg_subject_data <- function(data) {
     ungroup() %>%
     
     group_by(scene) %>%
-    mutate(diff_agg = (diff_s - min(diff_s))/(max(diff_s)-min(diff_s)),
-           diff_z = scale(diff_s),
-           diff_cum = cumsum(diff_agg),
-           diff_cum = diff_cum/max(diff_cum)) %>%
+    # mutate(diff_agg = (diff_s - min(diff_s))/(max(diff_s)-min(diff_s)),
+    #        diff_z = scale(diff_s),
+    #        diff_cum = cumsum(diff_agg),
+    #        diff_cum = diff_cum/max(diff_cum)) %>%
+    mutate(diff_z = scale(diff_s)) %>%
     ungroup()
 }
 ```
@@ -244,7 +244,7 @@ left_join(a, model_smooth) %>%
   geom_line(aes(y=diff_z, color="mean difficulty")) +
   facet_wrap(vars(scene))
 
-left_join(a, model_smooth) %>%
+left_join(a, model_smooth, by=c("scene", "frame")) %>%
   ggplot() +
   geom_density_2d_filled(aes(x=comp, y=diff_agg))
 
@@ -255,130 +255,88 @@ Bootstrapping
 
 ```{r}
 
-# we run the outer loop 1000 times
-n_iters <- 100
+# we run the outer loop 10000 times
+n_iters <- 500
 n_scenes <- max(subject_smooth$scene)
 
 bootstrap <- function(data) {
   s <- sample_subject_data()
   a <- agg_subject_data(s)
-  combined_data <- left_join(a, model_smooth)
+  combined_data <- left_join(a, model_smooth, by=c("scene", "frame"))
   
   # calculating the mean correlation along the scenes
   # for our hypothesis
-  h1 <- combined_data %>%
+  
+  h1_full <- cor(combined_data$comp_z, combined_data$diff_z)  
+  
+  h1_scene <- combined_data %>%
     group_by(scene) %>%
-    summarise(h1_corr = cor(comp_z, diff_z)) %>%
-    summarise(h1_corr = mean(h1_corr)) %>%
+    summarise(h1_corr = cor(comp_z, diff_z), .groups="drop_last") %>%
+    # summarise(h1_corr = mean(h1_corr), .groups="drop") %>%
     pull(h1_corr)
   
-  scenes_permuted <- sample(n_scenes, n_scenes)
-  null_vector = vector(,n_scenes)
+  # we want no ground truth mapping to remain
+  while (TRUE) {
+    scenes_permuted <- sample(n_scenes, n_scenes, replace=FALSE)
+    if (all(1:n_scenes != scenes_permuted)) {
+      break
+    }
+  }
+  
+  null_scene <- vector("numeric", n_scenes)
+  
+  x_full <- vector("numeric", length(combined_data))
+  y_full <- combined_data$diff_z
+  
   for (i in seq_along(scenes_permuted)) {
-    x <- combined_data %>%
-      filter(scene == i) %>%
+    x <-combined_data %>%
+      filter(scene == scenes_permuted[i]) %>%
       pull(comp_z)
     
-    y <- combined_data %>%
-      filter(scene == scenes_permuted[i]) %>%
-      pull(diff_z)
+    n <- length(x)
+    begin <- (i-1)*n+1
+    end <- i*n
     
-    null_vector[i] <- cor(x,y)
+    x_full[begin:end] <- x
+    
+    y <- combined_data %>%
+      filter(scene == i) %>%
+      pull(diff_z)
+
+    null_scene[i] <- cor(x,y)
   }
-  null <- mean(null_vector)
   
-  data.frame(h1 = h1, null = null)
+  null_full <- cor(x_full, y_full)
+  
+  data.frame(h1_full = h1_full,
+             h1_scene = h1_scene,
+             null_full = null_full,
+             null_scene = null_scene)
 }
 
 correlation_data <- bootstrap()
+
 for (i in seq(n_iters-1)) {
   correlation_data <- correlation_data %>%
     bind_rows(bootstrap())
 }
+```
+
+
+
+```{r}
 
 correlation_data %>%
   ggplot() +
-  geom_histogram(aes(x=h1, color="h1")) +
-  geom_histogram(aes(x=null, color="null"))
+  geom_density(aes(x=h1_scene, color="h1")) +
+  geom_density(aes(x=null_scene, color="null")) +
+  geom_vline(xintercept = mean(correlation_data$h1_scene), color="red") +
+  geom_vline(xintercept = quantile(correlation_data$null_scene, 0.975), color="blue")
 ```
 
-```{r}
-left_join(subject_smooth, model_smooth) %>%
-  ggplot(aes(x=frame)) +
-  geom_line(aes(y=comp, color="compute")) +
-  geom_line(aes(y=diff_agg, color="mean difficulty")) +
-  geom_linerange(aes(ymin=conf_low, ymax=conf_high)) +
-  facet_wrap(vars(scene))
-
-full_data <- left_join(subject_smooth, model_smooth)
-```
-
-
-```{r}
 
 # get 40,000 correlation by bootstrapping
 # 1) sample subjects with replacement
 # 2) do the rest of analysis
 # 3) repeat 1000 times
 
-correlations <- full_data %>%
-  group_by(scene) %>%
-  dplyr::summarise(corr=cor(comp, diff_agg, method="pearson")) %>%
-  ungroup()
-correlations
-
-cor.test(full_data$diff_agg, full_data$comp, method="pearson")
-```
-
-Getting the null hypothesis distribution
-
-```{r}
-n_scenes = max(full_data$scene)
-n_reps = 2
-
-get_null_r <- function() {
-  # choosing randomly to correlate
-  scenes <- sample(n_scenes, 2)
-  x <- full_data %>%
-    filter(scene == scenes[1]) %>%
-    select(comp)
-  y <- full_data %>%
-    filter(scene == scenes[2]) %>%
-    select(diff_agg)
-  cor(x, y)
-}
-
-get_h1_r <- function() {
-  rep(1, 40)
-}
-
-correlation_data <- data.frame(null = replicate(n_scenes*n_reps, get_null_r()),
-                               h1 = replicate(n_reps, get_h1_r()))
-
-```
-
-
-Permutation test
-```{r}
-nperm <- 1000
-
-x <- full_data$comp
-y <- full_data$diff_agg
-
-# TODO per scene (make sure it's not the right scene when permuted)
-r.obs <- cor(x, y)
-P.par <- cor.test(x, y)$p.value
-r.per <- replicate(nperm, expr = cor (x, sample(y)))
-summary(r.per)
-
-# data.frame(r.per = r.per, subjects = replicate(nperm, sample(correlations$corr))) %>%
-#   ggplot() +
-#   geom_histogram(aes(x=r.per)) +
-#   geom_histogram(aes(x=subjects))
-
-hist(correlations$corr, xlim = c(-1,1))
-abline(v = r.obs, col = 'red')
-abline(v = r.per, col = 'green')
-abline(v = mean(correlations$corr), col = 'blue')
-
-```
