@@ -33,7 +33,7 @@ th <- theme_classic()
 theme_set(th)
 ```
 
-Load subject data
+Load raw model data and raw subject data
 
 ```{r echo=TRUE}
 model_data <- read_csv("data/isr_inertia_480_attention.csv") %>%
@@ -44,28 +44,27 @@ model_data <- read_csv("data/isr_inertia_480_attention.csv") %>%
 min_frame = 1 # beginning may be unreliable for difficulty
 max_frame = 480
 
-# TODO do we control for td_acc == 1
 subject_data <- read_csv("data/parsed_trials.csv") %>%
-  dplyr::select(-c(WID)) %>%
-  arrange(ID, scene, frame) %>%
   rename(diff = difficulty) %>% # either choose raw presses or recreated continuous difficulty
+  dplyr::select(ID, td_acc, scene, frame, diff, presses) %>%
   filter(frame >= min_frame,
          frame <= max_frame) # making sure not to have NAs at the end
 
 ```
 
-Screning BAD subjects
+Screening BAD subjects:
+1) they have to be better than chance in TD
+2) they have to press spacebar at least once in half the scenes
+
+Screening BAD (subject, scene) pairings:
+1) The subject has to press spacebar at least once in the scene
 
 ```{r}
 
-perf_thresh = 3.0
+perf_thresh = 3.0 # standard deviations to be above
 scenes_pressed_thresh = 0.5
 
-# arbitrary threshold for how many diff a subject should do within a scene
-# TODO make less arbitrary
-presses_threshold_min = 0
-presses_threshold_max = 1000
-
+# ID level screening
 subject_performance <- subject_data %>%
   group_by(ID, scene) %>%
   mutate(scene_pressed = sum(presses) > 0) %>%
@@ -77,33 +76,46 @@ subject_performance <- subject_data %>%
             td_acc_se = sd(td_acc)/sqrt(n/3),
             ID_passed = abs(td_acc_mu - 0.5) > perf_thresh*td_acc_se & scenes_pressed > scenes_pressed_thresh)
 
+# ID+scene level screning
 subject_presses <- subject_data %>%
-  group_by(scene, ID) %>%
-  summarize(presses_scene_sum = sum(presses),
-            pressed_scene = presses_scene_sum > presses_threshold_min &
-                            presses_scene_sum < presses_threshold_max) %>%
-  ungroup()
+  group_by(ID, scene) %>%
+  summarise(presses_sum = sum(presses),
+            ID_scene_passed = presses_sum > 0)
 
-left_join(subject_presses, subject_performance) %>%
-  filter(ID_passed) %>%
-  ggplot() +
-  geom_histogram(aes(x=presses_scene_sum)) +
-  facet_wrap(vars(ID))
-
-# TODO? td_pass_scene = td_acc == 1.0
 
 good_subject_data <- left_join(subject_presses, subject_performance) %>%
-  filter(ID_passed, pressed_scene) %>%
+  filter(ID_passed, ID_scene_passed) %>%
+  select(ID, scene) %>%
+  distinct() %>%
   left_join(subject_data) %>%
-  select(-c(ID_passed, pressed_scene))
+  select(-c(td_acc))
+
+# visualizing the presses across scenes and participants
+subject_presses %>%
+  ggplot() +
+  ggtitle("Histogram of presses sum for scene-participant pairs (NB: xlim)") +
+  xlim(c(0, 150)) +
+  geom_histogram(aes(x=presses_sum), bins=150)
+
+# visualizing the passed subject distributions of presses
+good_subject_data %>%
+  group_by(scene, ID) %>%
+  summarize(presses_scene_sum = sum(presses)) %>%
+  ggplot() +
+  ggtitle("Visualizing the distribution of presses for each passed participant") +
+  geom_histogram(aes(x=presses_scene_sum)) +
+  facet_wrap(vars(ID))
 ```
+
+Visualizing raw data for one scene
 
 ```{r}
 left_join(good_subject_data, model_data) %>%
   filter(scene == 3) %>%
   ggplot() +
+  ylab("compute/difficulty") +
   geom_line(aes(x=frame, y=compute, color="compute")) +
-  geom_line(aes(x=frame, y=diff*10, color=factor(ID))) +
+  geom_line(aes(x=frame, y=diff, color=factor(ID))) +
   facet_wrap(vars(scene))
 ```
 
@@ -114,10 +126,10 @@ sum_compute_diff <- left_join(good_subject_data, model_data) %>%
   group_by(ID) %>%
   mutate(sum_diff = sum(diff)) %>%
   group_by(scene, ID) %>%
-  mutate(scene_sum_diff = sum(diff)/sum_diff) %>%
-  group_by(scene) %>%
-  mutate(scene_sum_comp = sum(compute)) %>%
+  summarise(scene_sum_diff = sum(diff)/sum_diff,
+            scene_sum_comp = sum(compute)) %>%
   ungroup() %>%
+  distinct() %>%
   group_by(scene) %>%
   mutate(scene_sum_diff_mu = mean(scene_sum_diff)) %>%
   ungroup()
@@ -130,7 +142,13 @@ correlations <- sum_compute_diff %>%
   ungroup()
 correlations
 
-#average subject correlation
+# correlating the values directly
+sum_compute_diff %>%
+  summarise(corr=cor(scene_sum_comp, scene_sum_diff),
+            p.value=cor.test(scene_sum_comp, scene_sum_diff)$p.value)
+
+
+# correlating the average subject
 sum_compute_diff %>%
   summarise(corr=cor(scene_sum_comp, scene_sum_diff_mu),
             p.value=cor.test(scene_sum_comp, scene_sum_diff_mu)$p.value)
@@ -138,21 +156,23 @@ sum_compute_diff %>%
 
 sum_compute_diff %>%
   ggplot() +
-  geom_point(aes(x=scene_sum_comp, y=scene_sum_diff, color=factor(ID))) +
+  ggtitle("Individual level difficulty judgements for each scene against model compute") +
+  xlab("compute") +
+  ylab("difficulty") +
+  # ylim(c(0.0, 0.08)) +
+  geom_point(aes(x=scene_sum_comp, y=scene_sum_diff), alpha=0.3) +
   geom_point(shape=23, size=5, aes(x=scene_sum_comp, y=scene_sum_diff_mu, color="average Participant"))
 ```
 
-Data smoothing
+Normalizing subjects, model smoothing
 
 ```{r}
 model_smoothing <- 36
 subject_smoothing <- 36
-lead_n <- 20
-
 max_smoothing <- max(model_smoothing, subject_smoothing)
 
-# s_diff - smooth difficulty
-subject_smooth <- good_subject_data %>%
+
+subject_norm <- good_subject_data %>%
   group_by(ID) %>%
   summarise(diff_sum = sum(diff)) %>%
   right_join(good_subject_data, by="ID") %>%
@@ -161,7 +181,6 @@ subject_smooth <- good_subject_data %>%
   select(ID, scene, frame, diff_norm)
 
 
-# s_comp - smooth compute
 model_smooth <- model_data %>%
   nest_by(scene) %>%
   mutate(s_comp_xy = list(with(data,
@@ -169,38 +188,22 @@ model_smooth <- model_data %>%
   mutate(s_comp = list(s_comp_xy$y)) %>%
   unnest(cols = c(data, s_comp)) %>%
   dplyr::select(-c(s_comp_xy)) %>%
-  filter(frame >= max_smoothing,
+  filter(frame >= min(frame) + max_smoothing,
          frame <= max(frame) - max_smoothing) %>%
   group_by(scene) %>%
-  mutate(comp = (s_comp - min(s_comp))/(max(s_comp) - min(s_comp)),
-         comp_z = scale(s_comp),
-         comp_cum = cumsum(comp),
-         comp_cum = comp_cum/max(comp_cum)) %>%
+  mutate(comp_z = scale(s_comp),
+         comp_scaled = (s_comp - min(s_comp))/(max(s_comp) - min(s_comp))) %>%
   ungroup()
 ```
 
 
 
-Bootstrapping prep
+Aggregation function that averages across subjects and smooths difficulty
+and shifts the average by the specified number of frames to the left
 
 ```{r}
-# number of subjects for one bootstrap operation
-n_subjects = 10
-
-# sample
-sample_subject_data <- function() {
-  sampled_IDs = sample(unique(subject_smooth$ID), n_subjects, replace=TRUE)
-  
-  data <- subject_smooth %>%
-    filter(ID == sampled_IDs[1])
-  
-  for (id in sampled_IDs[2:n_subjects]) {
-    data <- subject_smooth %>%
-      filter(ID == id) %>%
-      bind_rows(data)
-  }
-  data  
-}
+# how many frames to shift the subject difficulty to the left
+lead_n <- 20
 
 # make one average subject by aggregating subject data
 agg_subject_data <- function(data) {
@@ -217,36 +220,73 @@ agg_subject_data <- function(data) {
     
     group_by(scene) %>%
     mutate(diff_s = lead(diff_s, lead_n)) %>%
-    filter(frame >= max_smoothing,
+    filter(frame >= min(frame) + max_smoothing,
            frame <= max(frame) - max_smoothing - lead_n) %>%
     ungroup() %>%
     
     group_by(scene) %>%
-    # mutate(diff_agg = (diff_s - min(diff_s))/(max(diff_s)-min(diff_s)),
-    #        diff_z = scale(diff_s),
-    #        diff_cum = cumsum(diff_agg),
-    #        diff_cum = diff_cum/max(diff_cum)) %>%
-    mutate(diff_z = scale(diff_s)) %>%
+    mutate(diff_z = scale(diff_s),
+           diff_scaled = (diff_s - min(diff_s))/(max(diff_s)-min(diff_s))) %>%
     ungroup()
+}
+
+
+
+```
+
+
+Sample subject data for bootstrapping. Samples the specified number of subjects
+with replacement.
+
+
+```{r}
+
+# sample
+sample_subject_data <- function(data, n_subjects) {
+  sampled_IDs = sample(unique(data$ID), n_subjects, replace=TRUE)
+  
+  sampled_data <- data.frame()
+  for (id in sampled_IDs) {
+    sampled_data <- data %>%
+      filter(ID == id) %>%
+      bind_rows(sampled_data)
+  }
+  sampled_data
 }
 ```
 
 Testing bootstrap prep
 
 ```{r}
-s <- sample_subject_data()
+s <- sample_subject_data(subject_norm, 20)
+#s <- subject_norm
 a <- agg_subject_data(s)
 
 left_join(a, model_smooth) %>%
   # filter(scene == 3) %>%
   ggplot(aes(x=frame)) +
+  ggtitle("compute and avg subject difficulty (both scaled 0-1 at scene level)") +
+  geom_line(aes(y=comp_scaled, color="compute")) +
+  geom_line(aes(y=diff_scaled, color="mean difficulty")) +
+  facet_wrap(vars(scene))
+
+left_join(a, model_smooth) %>%
+  # filter(scene == 3) %>%
+  ggplot(aes(x=frame)) +
+  ggtitle("compute and avg subject difficulty (both z-scored at scene level)") +
   geom_line(aes(y=comp_z, color="compute")) +
   geom_line(aes(y=diff_z, color="mean difficulty")) +
   facet_wrap(vars(scene))
 
 left_join(a, model_smooth, by=c("scene", "frame")) %>%
   ggplot() +
-  geom_density_2d_filled(aes(x=comp, y=diff_agg))
+  ggtitle("all frames: compute and avg subject difficulty (both scaled 0-1 within scene)") +
+  geom_density_2d_filled(aes(x=comp_scaled, y=diff_scaled))
+
+left_join(a, model_smooth, by=c("scene", "frame")) %>%
+  ggplot() +
+  ggtitle("all frames: compute and avg subject difficulty (both z-scored within scene)") +
+  geom_density_2d_filled(aes(x=comp_z, y=diff_z))
 
 ```
 
@@ -256,41 +296,45 @@ Bootstrapping
 ```{r}
 
 # we run the outer loop 10000 times
-n_iters <- 500
-n_scenes <- max(subject_smooth$scene)
+n_iters <- 100
+n_subjects <- 2 # sampled subjects with replacement for one bs operation
 
-bootstrap <- function(data) {
-  s <- sample_subject_data()
+
+# one bootstrap iteration
+bootstrap <- function() {
+  
+  # sampling subject data and combining with model
+  s <- sample_subject_data(subject_norm, n_subjects)
   a <- agg_subject_data(s)
   combined_data <- left_join(a, model_smooth, by=c("scene", "frame"))
   
-  # calculating the mean correlation along the scenes
-  # for our hypothesis
+  # correlating across scenes
+  h1_full <- cor(combined_data$comp_z, combined_data$diff_z)
   
-  h1_full <- cor(combined_data$comp_z, combined_data$diff_z)  
-  
+  # correlating for each scene
   h1_scene <- combined_data %>%
     group_by(scene) %>%
-    summarise(h1_corr = cor(comp_z, diff_z), .groups="drop_last") %>%
-    # summarise(h1_corr = mean(h1_corr), .groups="drop") %>%
+    summarise(h1_corr = cor(comp_z, diff_z)) %>%
     pull(h1_corr)
+  
+  scenes <- unique(combined_data$scene)
   
   # we want no ground truth mapping to remain
   while (TRUE) {
-    scenes_permuted <- sample(n_scenes, n_scenes, replace=FALSE)
-    if (all(1:n_scenes != scenes_permuted)) {
+    scenes_permuted <- sample(scenes, replace=FALSE)
+    if (all(scenes != scenes_permuted)) {
       break
     }
   }
   
-  null_scene <- vector("numeric", n_scenes)
+  null_scene <- vector("numeric", length(scenes))
   
   x_full <- vector("numeric", length(combined_data))
   y_full <- combined_data$diff_z
   
-  for (i in seq_along(scenes_permuted)) {
-    x <-combined_data %>%
-      filter(scene == scenes_permuted[i]) %>%
+  for (i in 1:length(scenes)) {
+    x <- combined_data %>%
+      filter(scene == scenes[i]) %>%
       pull(comp_z)
     
     n <- length(x)
@@ -300,23 +344,28 @@ bootstrap <- function(data) {
     x_full[begin:end] <- x
     
     y <- combined_data %>%
-      filter(scene == i) %>%
+      filter(scene == scenes_permuted[i]) %>%
       pull(diff_z)
-
+    
     null_scene[i] <- cor(x,y)
   }
   
   null_full <- cor(x_full, y_full)
   
-  data.frame(h1_full = h1_full,
+  data.frame(scene = scenes,
+             h1_full = h1_full,
              h1_scene = h1_scene,
              null_full = null_full,
              null_scene = null_scene)
 }
 
-correlation_data <- bootstrap()
 
-for (i in seq(n_iters-1)) {
+correlation_data <- data.frame()
+
+for (i in seq(n_iters)) {
+  cat('\r',i)
+  flush.console()
+  
   correlation_data <- correlation_data %>%
     bind_rows(bootstrap())
 }
@@ -328,10 +377,32 @@ for (i in seq(n_iters-1)) {
 
 correlation_data %>%
   ggplot() +
+  ggtitle("scene-level correlation values") +
   geom_density(aes(x=h1_scene, color="h1")) +
   geom_density(aes(x=null_scene, color="null")) +
   geom_vline(xintercept = mean(correlation_data$h1_scene), color="red") +
   geom_vline(xintercept = quantile(correlation_data$null_scene, 0.975), color="blue")
+
+correlation_data %>%
+  ggplot() +
+  ggtitle("across-scenes correlation values") +
+  geom_density(aes(x=h1_full, color="h1")) +
+  geom_density(aes(x=null_full, color="null")) +
+  geom_vline(xintercept = mean(correlation_data$h1_full), color="red") +
+  geom_vline(xintercept = quantile(correlation_data$null_full, 0.975), color="blue")
+
+correlation_data %>%
+  group_by(scene) %>%
+  summarise(h1_scene_mu = mean(h1_scene),
+            h1_scene_low = quantile(h1_scene, 0.025),
+            h1_scene_high = quantile(h1_scene, 0.975)) %>%
+  arrange(h1_scene_mu) %>%
+  mutate(scene=factor(scene, levels=scene)) %>%
+  ggplot(aes(x=scene)) +
+  ggtitle("correlations in particular scenes") +
+  ylab("correlation") +
+  geom_bar(aes(y=h1_scene_mu), stat='identity') +
+  geom_errorbar(aes(ymin=h1_scene_low, ymax=h1_scene_high))
 ```
 
 
