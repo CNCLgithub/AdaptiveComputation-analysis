@@ -99,7 +99,7 @@ att_map %>%
   geom_density()
 
 full_data %>%
-  filter(scene %in% c(10, 11, 25)) %>%
+filter(scene %in% c(34,36)) %>%
   mutate(zatt = scale(att)) %>%
   ggplot(aes(frame, tracker)) +
   geom_tile(aes(fill = zatt)) +

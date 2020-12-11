@@ -28,7 +28,7 @@ def read_db(db_path, table_name, codeversions, mode):
     rows = s.execute()
 
     rawdata = []
-    statuses = list(range(3, 8)) # [3, 4, 5, 7]
+    statuses =  [3, 4, 5, 7]
     for row in rows:
         if (row['status'] in statuses and
             row['mode'] == mode and
@@ -89,28 +89,24 @@ def parse_row(row):
     probe_timings = np.array(probe_frames)*FRAME_DURATION
     
     spacebar = np.array(row.Probe)
+    response_frames = np.floor(spacebar / FRAME_DURATION).astype(int)
 
-    probes_classified = list(map(lambda x : classify(x, spacebar),
-                                 probe_timings))
-    probe_hits = list(map(any, probes_classified))
-    probe_fp_matrix = np.vstack(probes_classified)
-    probe_hit_count = np.logical_and.reduce(np.logical_not(probe_fp_matrix),
-                                            axis=0)
-    n_presses = len(spacebar)
     template = {
         'WID' : row.WID,
         'scene' : row.TrialName[0],
-        'td_acc' : td_acc,
-        'probe_fp' : sum(probe_hit_count)/n_presses if n_presses else 0
+        'probe_id_1' : probe_trackers[0],
+        'probe_id_2' : probe_trackers[1],
+        'probe_id_3' : probe_trackers[2],
+        'probe_id_4' : probe_trackers[3],
+        'td_1' : row.Target[0],
+        'td_2' : row.Target[1],
+        'td_3' : row.Target[2],
+        'td_4' : row.Target[3],
     }
-    cols = [ {'frame' : pf,
-              'tracker' : tr,
-              'pbh' : pbh,
-              'td_probe' : row.Target[tr-1],
-              **template}
-             for (pf,tr,pbh) in zip(probe_frames, probe_trackers,
-                                                  probe_hits)]
-
+    cols = [{'response_frame' : rf, **template} for rf in response_frames]
+    # in case no response is recorded
+    if len(cols) == 0:
+        cols = [template]
     return pd.DataFrame(cols)
 
     
@@ -154,20 +150,19 @@ def main():
     trs = trs.merge(row_data, on = ['scene', 'WID'])
 
     # Make sure we have 120 observations per participant
-    trialsbyp = trs.WID.value_counts()
+    trialsbyp = trs.groupby('WID').aggregate({"scene" : lambda x : len(x.unique())})
     print(trialsbyp)
-    trialsbyp = trialsbyp[trialsbyp / 4 == args.trialsbyp]
+    trialsbyp = trialsbyp[trialsbyp.scene  == args.trialsbyp]
     good_wids = trialsbyp.index
     trs = trs[trs.WID.isin(good_wids)]
 
     """Assign random identifiers to each participant"""
     wid_translate = {}
     for i, wid in enumerate(good_wids):
-        wid_translate[wid] = "Participant_" + str(i)
+        wid_translate[wid] = i
 
     trs["ID"] = trs.WID.apply(lambda x: wid_translate[x])
 
-    # trs = trs.drop('WID', 1)
 
     trs.to_csv(args.trialdata, index=False)
 
