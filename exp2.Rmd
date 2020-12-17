@@ -47,6 +47,7 @@ max_frame = 480
 subject_data <- read_csv("data/parsed_trials.csv") %>%
   rename(diff = difficulty) %>% # either choose raw presses or recreated continuous difficulty
   dplyr::select(ID, td_acc, scene, frame, diff, presses) %>%
+  arrange(ID, scene, frame) %>%
   filter(frame >= min_frame,
          frame <= max_frame) # making sure not to have NAs at the end
 
@@ -80,7 +81,8 @@ subject_performance <- subject_data %>%
 subject_presses <- subject_data %>%
   group_by(ID, scene) %>%
   summarise(presses_sum = sum(presses),
-            ID_scene_passed = presses_sum > 0)
+            ID_scene_passed = presses_sum > 0) %>%
+  ungroup()
 
 
 good_subject_data <- left_join(subject_presses, subject_performance) %>%
@@ -125,14 +127,15 @@ Let's look at scatter plot of compute vs. difficulty:
 sum_compute_diff <- left_join(good_subject_data, model_data) %>%
   group_by(ID) %>%
   mutate(sum_diff = sum(diff)) %>%
-  group_by(scene, ID) %>%
-  summarise(scene_sum_diff = sum(diff)/sum_diff,
-            scene_sum_comp = sum(compute)) %>%
   ungroup() %>%
-  distinct() %>%
+  group_by(scene, ID) %>%
+  mutate(scene_sum_diff = sum(diff)/sum_diff) %>%
+  ungroup() %>%
   group_by(scene) %>%
-  mutate(scene_sum_diff_mu = mean(scene_sum_diff)) %>%
-  ungroup()
+  mutate(scene_sum_comp = sum(compute),
+         scene_sum_diff_mu = mean(scene_sum_diff)) %>%
+  ungroup() %>%
+  distinct()
 
 #individual correlations
 correlations <- sum_compute_diff %>%
@@ -258,8 +261,8 @@ sample_subject_data <- function(data, n_subjects) {
 Testing bootstrap prep
 
 ```{r}
-s <- sample_subject_data(subject_norm, 20)
-#s <- subject_norm
+# s <- sample_subject_data(subject_norm, 50)
+s <- subject_norm
 a <- agg_subject_data(s)
 
 left_join(a, model_smooth) %>%
@@ -296,8 +299,8 @@ Bootstrapping
 ```{r}
 
 # we run the outer loop 10000 times
-n_iters <- 100
-n_subjects <- 2 # sampled subjects with replacement for one bs operation
+n_iters <- 1000
+n_subjects <- 10 # sampled subjects with replacement for one bs iteration
 
 
 # one bootstrap iteration
@@ -314,7 +317,7 @@ bootstrap <- function() {
   # correlating for each scene
   h1_scene <- combined_data %>%
     group_by(scene) %>%
-    summarise(h1_corr = cor(comp_z, diff_z)) %>%
+    summarise(h1_corr = cor(comp_z, diff_z), .groups="drop_last") %>%
     pull(h1_corr)
   
   scenes <- unique(combined_data$scene)
@@ -334,7 +337,7 @@ bootstrap <- function() {
   
   for (i in 1:length(scenes)) {
     x <- combined_data %>%
-      filter(scene == scenes[i]) %>%
+      filter(scene == scenes_permuted[i]) %>%
       pull(comp_z)
     
     n <- length(x)
@@ -344,7 +347,7 @@ bootstrap <- function() {
     x_full[begin:end] <- x
     
     y <- combined_data %>%
-      filter(scene == scenes_permuted[i]) %>%
+      filter(scene == scenes[i]) %>%
       pull(diff_z)
     
     null_scene[i] <- cor(x,y)
@@ -377,7 +380,8 @@ for (i in seq(n_iters)) {
 
 correlation_data %>%
   ggplot() +
-  ggtitle("scene-level correlation values") +
+  ggtitle("scene-level correlation values \n
+          blue line - 95% CI for null, red line - mean h1") +
   geom_density(aes(x=h1_scene, color="h1")) +
   geom_density(aes(x=null_scene, color="null")) +
   geom_vline(xintercept = mean(correlation_data$h1_scene), color="red") +
@@ -385,11 +389,58 @@ correlation_data %>%
 
 correlation_data %>%
   ggplot() +
-  ggtitle("across-scenes correlation values") +
+  ggtitle("across-scenes correlation values (\"one long vector method\") \n
+          blue line - 95% CI for null, red line - mean h1") +
   geom_density(aes(x=h1_full, color="h1")) +
   geom_density(aes(x=null_full, color="null")) +
-  geom_vline(xintercept = mean(correlation_data$h1_full), color="red") +
-  geom_vline(xintercept = quantile(correlation_data$null_full, 0.975), color="blue")
+  geom_vline(aes(xintercept = mean(h1_full)), color="red") +
+  geom_vline(aes(xintercept = quantile(null_full, 0.975)), color="blue")
+
+# z_95 = 1.960
+
+cor_data_summary <- correlation_data %>%
+  pivot_longer(cols=c(h1_scene, h1_full, null_scene, null_full),
+               names_to="hypothesis",
+               values_to="correlation") %>%
+  mutate(full = grepl("full", hypothesis, fixed=TRUE)) %>%
+  group_by(hypothesis) %>%
+  summarise(mu = mean(correlation),
+            # se = z_95*sd(correlation)/sqrt(n_iters),
+            low = quantile(correlation, 0.025),
+            high = quantile(correlation, 0.975),
+            full = all(full))
+
+cor_data_summary %>%
+  filter(full) %>%
+  ggplot(aes(hypothesis, mu)) +
+  geom_col() +
+  ylab("correlation") +
+  geom_errorbar(aes(ymin = low, ymax = high), width=0.3) +
+  ggtitle("Concatenated vector across scenes correlations)")
+
+cor_data_summary %>%
+  filter(!full) %>%
+  ggplot(aes(hypothesis, mu)) +
+  ggtitle("Scene level correlations)") +
+  geom_col() +
+  ylab("correlation") +
+  geom_errorbar(aes(ymin = low, ymax = high), width=0.3) 
+  
+
+# correlation_data %>%
+#   group_by(scene) %>%
+#   summarise(h1_scene_mu = mean(h1_scene),
+#             sd = sd(h1_scene),
+#             h1_scene_low = h1_scene_mu + (1.960*sd/sqrt(n_iters)),
+#             h1_scene_high = h1_scene_mu - (1.960*sd/sqrt(n_iters))) %>%
+#   arrange(h1_scene_mu) %>%
+#   mutate(scene=factor(scene, levels=scene)) %>%
+#   ggplot(aes(x=scene)) +
+#   ggtitle("correlations in particular scenes") +
+#   ylab("correlation") +
+#   geom_bar(aes(y=h1_scene_mu), stat='identity') +
+#   geom_errorbar(aes(ymin=h1_scene_low, ymax=h1_scene_high))
+
 
 correlation_data %>%
   group_by(scene) %>%
@@ -406,8 +457,128 @@ correlation_data %>%
 ```
 
 
-# get 40,000 correlation by bootstrapping
-# 1) sample subjects with replacement
-# 2) do the rest of analysis
-# 3) repeat 1000 times
+Split half correlation analysis
+
+```{r split half correlation analysis}
+sample_halves <- function(data) {
+  IDs <- unique(data$ID)
+  sampled_IDs <- sample(IDs, length(IDs) %/% 2) # splitting data in half (integer division)
+  
+  data %>%
+    mutate(first_half = ID %in% sampled_IDs)
+}
+
+
+bootstrap_split_half <- function() {
+  h <- sample_halves(subject_norm)
+  
+  first_half <- h %>%
+    filter(first_half)
+  
+  second_half <- h %>%
+    filter(!first_half)
+
+  second_half
+  
+  a1 <- agg_subject_data(first_half) %>%
+    rename(diff_z_1 = diff_z) %>%
+    select(scene, frame, diff_z_1)
+  
+  a2 <- agg_subject_data(second_half) %>%
+    rename(diff_z_2 = diff_z) %>%
+    select(scene, frame, diff_z_2)
+
+  combined_data <- inner_join(a1, a2, by=c("scene", "frame"))
+  scenes <- unique(combined_data$scene)
+  
+  cor_scene <- combined_data %>%
+    group_by(scene) %>%
+    summarise(cor_scene = cor(diff_z_1, diff_z_2), .groups="drop_last") %>%
+    ungroup() %>%
+    pull(cor_scene)
+  
+  cor_full = cor(combined_data$diff_z_1, combined_data$diff_z_2)
+  
+  data.frame(scene = scenes,
+             cor_scene = cor_scene,
+             cor_full = cor_full)
+}
+
+split_half_data <- data.frame()
+n_iters = 1000
+
+for (i in seq(n_iters)) {
+  cat('\r',i)
+  flush.console()
+  
+  split_half_data <- split_half_data %>%
+    bind_rows(bootstrap_split_half())
+}
+
+
+```
+
+
+```{r plot split half}
+split_half_data %>%
+  ggplot() +
+  ggtitle("scene-level split half correlation values") +
+  geom_density(aes(x=cor_scene, color="split half cor")) +
+  geom_vline(xintercept = mean(split_half_data$cor_scene), color="red") +
+  geom_vline(xintercept = quantile(split_half_data$cor_scene, 0.025), color="red", linetype="dotted") +
+  geom_vline(xintercept = quantile(split_half_data$cor_scene, 0.975), color="red", linetype="dotted")
+
+split_half_data %>%
+  ggplot() +
+  ggtitle("across-scenes split half correlation values (\"one long vector method\")") +
+  geom_density(aes(x=cor_full, color="split half cor")) +
+  geom_vline(aes(xintercept = mean(cor_full)), color="red") +
+  geom_vline(xintercept = quantile(split_half_data$cor_full, 0.025), color="red", linetype="dotted") +
+  geom_vline(xintercept = quantile(split_half_data$cor_full, 0.975), color="red", linetype="dotted")
+
+
+# cor_data_summary <- split_half %>%
+#   pivot_longer(cols=c(h1_scene, h1_full, null_scene, null_full),
+#                names_to="hypothesis",
+#                values_to="correlation") %>%
+#   mutate(full = grepl("full", hypothesis, fixed=TRUE)) %>%
+#   group_by(hypothesis) %>%
+#   summarise(mu = mean(correlation),
+#             # se = z_95*sd(correlation)/sqrt(n_iters),
+#             low = quantile(correlation, 0.025),
+#             high = quantile(correlation, 0.975),
+#             full = all(full))
+
+# cor_data_summary %>%
+#   filter(full) %>%
+#   ggplot(aes(hypothesis, mu)) +
+#   geom_col() +
+#   ylab("correlation") +
+#   geom_errorbar(aes(ymin = low, ymax = high), width=0.3) +
+#   ggtitle("Concatenated vector across scenes correlations)")
+# 
+# cor_data_summary %>%
+#   filter(!full) %>%
+#   ggplot(aes(hypothesis, mu)) +
+#   ggtitle("Scene level correlations)") +
+#   geom_col() +
+#   ylab("correlation") +
+#   geom_errorbar(aes(ymin = low, ymax = high), width=0.3) 
+#   
+
+
+split_half_data %>%
+  group_by(scene) %>%
+  summarise(cor_scene_mu = mean(cor_scene),
+            cor_scene_low = quantile(cor_scene, 0.025),
+            cor_scene_high = quantile(cor_scene, 0.975)) %>%
+  arrange(cor_scene_mu) %>%
+  mutate(scene=factor(scene, levels=scene)) %>%
+  ggplot(aes(x=scene)) +
+  ggtitle("correlations in particular scenes") +
+  ylab("correlation") +
+  geom_bar(aes(y=cor_scene_mu), stat='identity') +
+  geom_errorbar(aes(ymin=cor_scene_low, ymax=cor_scene_high))
+
+```
 
