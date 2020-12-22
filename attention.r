@@ -25,15 +25,15 @@ full_data <- attention_full %>%
 
 probe_limit = 48
 tmax = max(full_data$frame)
-n_trackers = length(unique(full_data$tracker))
+# n_trackers = length(unique(full_data$tracker))
 
 
 sample_timepoints <- function(probe_limit, tmax) {
   while (TRUE) {
-    possible_frames = probe_limit:tmax-probe_limit
+    possible_frames = seq(probe_limit, tmax-probe_limit)
     samples = sort(sample(possible_frames, 4))
     if (all(sort(dist(samples)) > probe_limit)) {
-      return(samples + probe_limit)
+      return(samples)
     }
   }
 }
@@ -88,7 +88,7 @@ att_map <- tps %>%
 att_map %>%
   ggplot(aes(att)) +
   xlim(0, 13) +
-  geom_density(binwidth = 0.3)
+  geom_histogram(binwidth = 0.3)
 
 
 write.csv(att_map, row.names = FALSE,
