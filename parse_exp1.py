@@ -120,12 +120,12 @@ def main():
                         default = 'data/participants.db')
     parser.add_argument("--table_name", type = str, default = "exp1_live",
                         help = 'Table name')
-    parser.add_argument("--exp_flag", type = str, nargs ='+', default = ["4.0"],
+    parser.add_argument("--exp_flag", type = str, nargs ='+', default = ["1.0"],
                         help = 'Experiment version flag')
     parser.add_argument("--mode", type = str, default = "debug",
                         choices = ['debug', 'sandbox', 'live'],
                         help = 'Experiment mode')
-    parser.add_argument("--trialsbyp", type = int, default = 120,
+    parser.add_argument("--trialsbyp", type = int, default = 40,
                         help = 'Number of trials expected per subject')
     parser.add_argument("--trialdata", type = str, default = 'data/parsed_trials.csv',
                         help = 'Filename to dump parsed trial data')

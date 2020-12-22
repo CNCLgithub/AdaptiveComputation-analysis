@@ -45,8 +45,8 @@ Loading non-subject data
 
 ```{r echo=FALSE, results='hide'}
 
-# scene, frame, tracker
-probe_timings <- read_csv("output/isr_inertia_480_probe_timings.csv") %>%
+# scene, frame
+probe_timings <- read_csv("output/isr_inertia_probe_map_random.csv") %>%
   filter(scene <= 40) %>%
   group_by(scene, frame) %>%
   summarise() %>%
@@ -57,7 +57,7 @@ probe_timings <- read_csv("output/isr_inertia_480_probe_timings.csv") %>%
   ungroup()
 
 # scene, frame, tracker, eccentricity...
-prep_ecc_data <- read_csv("output/isr_inertia_480_probe_map_eccentricity.csv") %>%
+prep_ecc_data <- read_csv("output/isr_inertia_probe_map_random_eccentricty.csv") %>%
   filter(scene <= 40)
 
 # scene, frame, tracker, attention, prediction location ...
@@ -154,7 +154,7 @@ hit_window = 36
 probe_space = 60
 with_probes <- subject_data %>%
   nest_by(ID) %>%
-  mutate(full = list(right_join(data, probe_timings))) %>%
+  mutate(full = list(right_join(data, probe_timings, by = "scene"))) %>%
   select(-data) %>%
   unnest(cols = full) %>%
   mutate(delta_t = response_frame - frame,
@@ -215,8 +215,10 @@ good_subjects_data <- subject_performance %>%
   left_join(with_probes, by = "ID") %>%
   left_join(hr_by_subj_scene) %>%
   left_join(td_by_subj_scene, by = c("ID", "scene")) %>%
-  ungroup() %>%
-  filter(td == 1)
+  ungroup()
+
+# %>%
+#   filter(td == 1)
 
 
 ```
@@ -245,10 +247,10 @@ hr_by_probe <- good_subjects_data %>%
   separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
   mutate(probed_tracker_epoch = as.numeric(probed_tracker_epoch)) %>%
   group_by(ID, scene, probe, epoch, probed_tracker_epoch, tracker) %>%
+  filter(probed_tracker_epoch == epoch) %>%
   summarise(hit = any(hit),
             td = mean(td),
             n = n()) %>%
-  filter(probed_tracker_epoch == epoch) %>%
   ungroup() %>%
   group_by(scene, epoch, probe, tracker) %>%
   summarise(hr = mean(hit),
@@ -547,32 +549,6 @@ ate_by_probe %>%
   geom_smooth(method = "lm")
 ```
 
-Looking at various covariates
-
-```{r}
-wm_solo <- ate_by_probe %>%
-  with(lm(hr ~ zttwm))
-
-tm_solo <- ate_by_probe %>%
-  with(lm(hr ~ ztttm))
-
-dm_solo <- ate_by_probe %>%
-  with(lm(hr ~ tracker_to_dot_mean))
-
-wm_dm <-  ate_by_probe %>%
-  with(lm(hr ~ tracker_to_dot_mean + tracker_to_dot_mean))
-
-```
-
-```{r}
-sg <- stargazer::stargazer(ate_by_probe,type = "text")
-
-```
-
-```{r}
-sg <- stargazer::stargazer(tttm_ttwm, tttm_hr, res_res_fit,type = "text")
-
-```
 ```{r}
 
 # for effect size + conf interval
