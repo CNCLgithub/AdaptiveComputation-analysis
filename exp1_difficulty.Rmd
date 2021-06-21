@@ -1,0 +1,162 @@
+---
+title: "Exp 1: Difficulty"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+header-includes:
+ \usepackage{booktabs}
+ \usepackage{longtable}
+ \usepackage{array}
+ \usepackage{multirow}
+ \usepackage{wrapfig}
+ \usepackage{float}
+ \floatplacement{figure}{H}
+---
+
+# Setup
+
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(fig.pos = 'H',
+                      echo=TRUE, warning=FALSE, message=FALSE)
+
+```
+```{r , include=FALSE}
+library(tidyverse)
+library(estimatr)
+# library(hexbin)
+# library(ggplot2)
+# library(readr)
+# library(stargazer)
+
+
+th <- theme_minimal()
+theme_set(th)
+```
+
+## Load Data
+
+```{r echo=TRUE, results='hide'}
+subject_data <- read_csv("data/exp1_difficulty_parsed_trials.csv") %>%
+  select(-c(WID)) %>%
+  replace_na(list(response_frame = Inf)) %>%
+  group_by(ID) %>%
+  mutate(difficulty = scale(difficulty))
+
+model_data <- read_csv("data/exp1_difficulty_target_designation.csv")
+```
+
+```{r}
+td_by_subj_tracker <- subject_data %>%
+  pivot_longer(cols = starts_with("td"), 
+               names_to = "tracker", 
+               values_to = "td") %>%
+  separate(tracker, c("NA", "tracker")) %>%
+  mutate(tracker = as.numeric(tracker)) %>%
+  group_by(ID, scene, tracker) %>%
+  summarise(td = first(td),
+            vel = first(vel),
+            n_dist = first(n_dist),
+            difficulty = first(difficulty))
+
+td_by_subj <- td_by_subj_tracker %>%
+  group_by(ID) %>%
+  summarise(td_acc_mu = mean(td),
+            n = n(),
+            td_acc_se = sd(td) / sqrt(n),
+            passed = td_acc_mu > 0.5 + 3 * td_acc_se) # chance performance lower than 0.5?
+td_by_subj
+
+good_td_by_subj_tracker <- td_by_subj %>%
+  filter(passed) %>%
+  left_join(td_by_subj_tracker)
+
+
+good_td_by_scene <- good_td_by_subj_tracker %>%
+  group_by(scene) %>%
+  summarise(td = mean(td),
+            vel = first(vel),
+            n_dist = first(n_dist),
+            difficulty = mean(difficulty))
+
+good_td_by_subj_scene <- good_td_by_subj_tracker %>%
+  group_by(ID, scene) %>%
+  summarise(td = mean(td),
+            difficulty = first(difficulty),
+            n_dist = first(n_dist))
+
+
+
+```
+
+
+```{r}
+good_td_by_subj_scene %>%
+  ggplot(aes(x=td)) +
+  geom_histogram(bins=10) +
+  facet_wrap(vars(n_dist)) +
+  ggtitle("Number of distractors and target designation")
+
+x_breaks <- seq(2.0,14.0,length.out=14)
+y_breaks <- seq(4,8,length.out=6)
+
+breaks<-list(x=x_breaks, y=y_breaks)
+
+good_td_by_scene %>%
+  ggplot(aes(x=vel, y=n_dist, z=difficulty)) +
+  stat_summary_2d(breaks=breaks) +
+  ggtitle("difficulty as a function of velocity and number o distractors")
+
+good_td_by_scene %>%
+  ggplot(aes(factor(n_dist), y=difficulty)) +
+  geom_violin()
+
+good_td_by_scene %>%
+  ggplot(aes(factor(vel), y=difficulty)) +
+  geom_violin()
+
+```
+\newpage
+
+# Model compute explaining difficulty
+```{r}
+model_td_compute_by_scene <- model_data %>%
+  group_by(scene) %>%
+  summarize(td_model = mean(td_acc),
+            compute = mean(attention))
+
+good_full_data <- good_td_by_scene %>%
+  left_join(model_td_compute_by_scene)
+
+good_full_data %>%
+  with(lm_robust(difficulty ~ compute)) %>%
+  summary()
+
+good_full_data %>%
+  ggplot(aes(x=compute, y=difficulty)) +
+  geom_point() +
+  geom_smooth(method="lm_robust")
+```
+
+# Residualized analysis
+```{r}
+pred_compute <- good_full_data %>%
+  with(lm_robust(compute ~ td)) %>%
+  predict()
+pred_difficulty <- good_full_data %>%
+  with(lm_robust(difficulty ~ td)) %>%
+  predict()
+
+good_full_data <- good_full_data %>%
+  mutate(res_difficulty = difficulty - pred_difficulty,
+         res_compute = compute - pred_compute)
+
+good_full_data %>%
+  with(lm_robust(res_difficulty ~ res_compute)) %>%
+  summary()
+
+good_full_data %>%
+  ggplot(aes(x=res_compute, y=res_difficulty)) +
+  geom_point() + 
+  geom_smooth(method="lm_robust")
+```
