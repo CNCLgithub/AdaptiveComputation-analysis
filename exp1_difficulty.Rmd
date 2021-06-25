@@ -116,7 +116,17 @@ good_td_by_scene %>%
   geom_violin()
 
 ```
+```{r}
+good_td_by_scene %>%
+  with(lm(td ~ n_dist + vel)) %>%
+  summary()
+
+good_td_by_scene %>%
+  with(lm(difficulty ~ vel)) %>%
+  summary()
+```
 \newpage
+
 
 # Model compute explaining difficulty
 ```{r}
@@ -140,11 +150,15 @@ good_full_data %>%
 
 # Residualized analysis
 ```{r}
+good_full_data %>%
+  ggplot(aes(x=td_model, y=difficulty)) +
+  geom_point()
+
 pred_compute <- good_full_data %>%
-  with(lm_robust(compute ~ td)) %>%
+  with(lm_robust(compute ~ td_model + td)) %>%
   predict()
 pred_difficulty <- good_full_data %>%
-  with(lm_robust(difficulty ~ td)) %>%
+  with(lm_robust(difficulty ~ td_model + td)) %>%
   predict()
 
 good_full_data <- good_full_data %>%
@@ -159,4 +173,11 @@ good_full_data %>%
   ggplot(aes(x=res_compute, y=res_difficulty)) +
   geom_point() + 
   geom_smooth(method="lm_robust")
+```
+```{r}
+good_full_data %>%
+  pivot_longer(cols=c("td", "td_model"), names_to="organism", values_to="acc") %>%
+  ggplot(aes(x=acc)) +
+  facet_grid(vars(organism)) +
+  geom_histogram(bins=15)
 ```

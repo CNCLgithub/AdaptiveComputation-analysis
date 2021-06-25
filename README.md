@@ -1,6 +1,6 @@
 # MOT Analysis
 
-Collect of analysis scripts used in CogSci 2020 and beyond
+Collection of analysis scripts used for the journal submission on dynamic attention
 
 ## Layout
 
