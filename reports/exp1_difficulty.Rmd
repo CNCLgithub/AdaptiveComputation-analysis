@@ -1,0 +1,456 @@
+---
+title: "Exp 1: Difficulty G(0.005)"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+header-includes:
+ \usepackage{booktabs}
+ \usepackage{longtable}
+ \usepackage{array}
+ \usepackage{multirow}
+ \usepackage{wrapfig}
+ \usepackage{float}
+ \floatplacement{figure}{H}
+---
+
+# Setup
+
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(fig.pos = 'H',
+                      echo=TRUE, warning=FALSE, message=FALSE)
+
+```
+```{r , include=FALSE}
+library(tidyverse)
+library(estimatr)
+# library(hexbin)
+# library(ggplot2)
+# library(readr)
+# library(stargazer)
+
+
+th <- theme_minimal()
+theme_set(th)
+```
+
+## Load Data
+
+```{r echo=TRUE, results='hide'}
+subject_data <- read_csv("output/exp1_difficulty_parsed_trials.csv") %>%
+  select(-c(WID)) %>%
+  replace_na(list(response_frame = Inf)) %>%
+  group_by(ID) %>%
+  mutate(difficulty = scale(difficulty))
+
+exp_design <- subject_data %>%
+  group_by(scene) %>%
+  summarise(across(c(vel, n_dist), first))
+
+model_data <- read_csv("data/exp1_difficulty_target_designation_g00_c30_11_30_2021.csv")
+```
+
+```{r, echo=FALSE, results='hide'}
+td_by_subj_tracker <- subject_data %>%
+  group_by(ID) %>%
+  rowwise() %>%
+  mutate(td = mean(c(td_1, td_2, td_3, td_4)))
+
+td_by_subj <- td_by_subj_tracker %>%
+  group_by(ID) %>%
+  summarise(td_acc_mu = mean(td),
+            n = n(),
+            td_acc_se = sd(td) / sqrt(n),
+            passed = td_acc_mu > 0.50 + 3 * td_acc_se) # chance performance lower than 0.5?
+td_by_subj
+
+
+good_td_by_subj_tracker <- td_by_subj %>%
+  filter(passed) %>%
+  select(ID) %>%
+  left_join(td_by_subj_tracker)
+
+n_passed = sum(td_by_subj$passed)
+
+
+good_td_by_scene_tracker <- good_td_by_subj_tracker %>%
+  select(-td) %>% # remove trial perf across trackers for each subj
+  group_by(scene) %>% # average across subjects
+  summarise(
+    n = n(),
+    across(c(starts_with("td"), difficulty), list(mu = mean, sd = sd)),
+    )
+
+good_td_by_scene <- good_td_by_subj_tracker %>%
+  select(scene, contains("td")) %>%
+  pivot_longer(-scene,
+               names_to = c(NA, "tracker"),
+               names_sep = "_",
+               values_to = "td"
+               ) %>%
+  group_by(scene) %>%
+  summarise(across(td, list(mu = mean, sd = sd))) %>%
+  left_join(good_td_by_scene_tracker) %>%
+  left_join(exp_design)
+
+
+model_td_compute_by_scene <- model_data %>%
+  select(-id) %>%
+  rowwise() %>%
+  mutate(td_chain = mean(c(tracker_1, tracker_2, tracker_3, tracker_4))) %>%
+  group_by(scene) %>%         # average across chains
+  summarise(across(-chain, list(mu = mean, sd = sd))) %>%
+  rename(td_model = td_chain_mu) %>%
+  ungroup() %>%
+  mutate(compute = scale(log(cycles_mu + 10)))
+```
+
+## Psychophysics summary
+
+
+Below is a histogram describing the trial-average difficulty binned by velocity and number of distractors.
+The violin plots show the marginals with respect to each design variable. 
+```{r}
+x_breaks <- seq(2.0,14.0,length.out=14)
+y_breaks <- seq(4,8,length.out=6)
+
+breaks<-list(x=x_breaks, y=y_breaks)
+
+good_td_by_scene %>%
+  ggplot(aes(x=vel, y=n_dist, z=difficulty_mu)) +
+  stat_summary_2d(breaks=breaks) +
+  ggtitle("difficulty ~ velocity + distractors")
+
+good_td_by_scene %>%
+  ggplot(aes(factor(n_dist), y=difficulty_mu)) +
+  geom_violin() + 
+  ggtitle("difficulty ~ distractors")
+
+
+good_td_by_scene %>%
+  ggplot(aes(factor(vel), y=difficulty_mu)) +
+  geom_violin() + 
+  ggtitle("difficulty ~ velocity")
+
+
+```
+
+Here we show that the design variables explain an overwhelming amount of variance in tracking accuracy and difficulty ratings. 
+```{r}
+good_td_by_scene %>%
+  with(lm(td_mu ~ n_dist + vel)) %>%
+  summary()
+
+good_td_by_scene %>%
+  with(lm(difficulty_mu ~ n_dist + vel)) %>%
+  summary()
+```
+
+## Modeling psychophysics
+
+< Correctly compute sd across chains >
+
+> across(c(starts_with("td"), difficulty), list(mu = mean, sd = sd)),
+
+```{r, echo = FALSE, results = 'hide'}
+model_td_compute_by_scene <- model_data %>%
+  select(-id) %>%
+  rowwise() %>%
+  mutate(td_chain = mean(c(tracker_1, tracker_2, tracker_3, tracker_4))) %>%
+  group_by(scene) %>%         # average across chains
+  summarise(across(-chain, list(mu = mean, sd = sd))) %>%
+  rename(td_model = td_chain_mu) %>%
+  ungroup() %>%
+  mutate(compute = scale(log(cycles_mu + 10)))
+
+  
+good_full_data <- good_td_by_scene %>%
+  left_join(model_td_compute_by_scene) %>%
+  mutate(diff_td = td_mu - td_model)
+
+```
+
+
+### Comparing performance and human accuracy
+
+
+Here we show the distribution of accuracy for each organism as well as their average performance and distribution of trial-level differences in performance. 
+
+Clearly, the model outperforms humans in a range of trials (TODO: look at relationship with design variables).
+Interestingly, the spread of performance across trials is qualitatively distinct for humans.
+While the model exhibits a tialed spread, humans clearely have three modes of performance, around $85\%, 72\%, 55\%$, respectively. 
+I believe these modes are signatures of representational dropping conferring an advantage in the form a resilient lower performance bound. 
+Rather than approaching chance (which can be as low as $13\%$ in some of the harder trials), humans drop trackers, merging them with ensembles, and focusing more cycles on the remaining trackers. 
+Note that merging provides a principled manner for the experience of having high certainty of the target status of two objects while being almost completely clueless regarding the rest without believing that the other two targets "dissappeared". 
+I'd imagine that we varied the number of targets across trials (2-5), subjects would still be able to 1. track some subset of targets and 2. accurately report how many targets are in the scene regardless of performance in 1. 
+```{r}
+good_full_data %>%
+  pivot_longer(cols=c("td_mu", "td_model"), names_to="organism", values_to="acc") %>%
+  ggplot(aes(x=acc)) +
+  facet_grid(vars(organism)) +
+  geom_histogram(bins=12) + 
+  ggtitle("Distribution of tracking accuracy for humans and model")
+
+good_full_data %>%
+  summarise(
+    human_td = mean(td_mu),
+    model_td = mean(td_model)
+  )
+
+good_full_data %>%
+  ggplot(aes(diff_td)) +
+  geom_histogram() + 
+  ggtitle("Distribution of trial-level differences in accuracy")
+
+good_full_data %>%
+  ggplot(aes(x = vel, y = n_dist, z = diff_td)) +
+  stat_summary_2d(breaks=breaks) +
+  ggtitle("diff in acc ~ velocity + distractors")
+```
+
+> TODO: Look at these plots at the tracker level
+
+Despite these differences in accuracy, model accuracy is still able to explain a strong portion of the variance in human performance
+```{r}
+good_full_data %>%
+  with(lm_robust(td_mu ~ td_model)) %>%
+  summary()
+
+good_full_data %>%
+  ggplot(aes(x = td_mu, 
+             y = td_sd)) +
+  geom_point()
+
+good_full_data %>%
+  ggplot(aes(x=td_mu, y=difficulty_mu)) +
+  geom_point()
+
+
+good_full_data %>%
+  ggplot(aes(x=td_model, y=td_chain_sd)) +
+  geom_point() 
+
+
+```
+
+
+### Model compute explaining difficulty
+
+Similar to tracking performance, total amount of allocated resources explains a strong amount of variance in human difficulty ratings. 
+```{r}
+good_full_data %>%
+  pivot_longer(cols=c("difficulty_mu", "compute"), names_to="organism", values_to="effort") %>%
+  ggplot(aes(x=effort)) +
+  facet_grid(vars(organism)) +
+  geom_histogram() + 
+  ggtitle("Distribution of effort for humans and model")
+
+good_full_data %>%
+  with(lm_robust(difficulty_mu ~ compute)) %>%
+  summary()
+
+good_full_data %>%
+  ggplot(aes(x=compute, y=difficulty_mu)) +
+  geom_point() +
+  geom_smooth(method="lm_robust")
+
+```
+
+In order to control for external factors influencing effort ratings, we perform a series of partial regressions on candidate factors.
+
+Here we address the possibility that effort ratings are primarily driven by subject's instrospectively perceived accuracy and instead reflect a measure of confidence rather than effort. To remove shared variance with human accuracy we performed partial regressions on difficulty and allocated cycles.
+A moderate but significant amount of residualized variance in difficulty was explained by residualized variance in allocated cycles.
+It is important to note that this residualized $R^2$ approaches the upper limit of possible variance explained given the stregnth of the first stage. 
+```{r}
+good_full_data %>%
+  ggplot(aes(x=td_mu, y=difficulty_mu)) +
+  geom_point()
+
+good_full_data %>%
+  with(lm_robust(difficulty_mu ~ td_mu)) %>%
+  summary()
+
+pred_compute <- good_full_data %>%
+  with(lm_robust(compute ~ td_mu)) %>%
+  predict()
+pred_difficulty <- good_full_data %>%
+  with(lm_robust(difficulty_mu ~ td_mu)) %>%
+  predict()
+
+good_full_data <- good_full_data %>%
+  mutate(res_difficulty = difficulty_mu - pred_difficulty,
+         res_compute = compute - pred_compute)
+
+model <- good_full_data %>%
+  with(lm_robust(res_difficulty ~ res_compute))
+
+pred_pred_difficulty <- model %>% 
+  predict()
+
+good_full_data <- good_full_data %>%
+  mutate(res_res_difficulty = res_difficulty - pred_pred_difficulty,
+         abs_res_res_diff = abs(res_res_difficulty))
+
+model %>%
+  summary()
+
+good_full_data %>%
+  ggplot(aes(x = res_compute, 
+             y = res_difficulty)) +
+  geom_point() 
+```
+
+# ```{r}
+# pred_compute <- good_full_data %>%
+#   with(lm_robust(td ~ compute)) %>%
+#   predict()
+# pred_difficulty <- good_full_data %>%
+#   with(lm_robust(difficulty ~ compute)) %>%
+#   predict()
+# 
+# good_full_data <- good_full_data %>%
+#   mutate(res_difficulty = difficulty - pred_difficulty,
+#          res_compute = compute - pred_compute)
+# 
+# model <- good_full_data %>%
+#   with(lm_robust(res_difficulty ~ res_compute))
+# 
+# pred_pred_difficulty <- model %>% 
+#   predict()
+# 
+# good_full_data <- good_full_data %>%
+#   mutate(res_res_difficulty = res_difficulty - pred_pred_difficulty,
+#          abs_res_res_diff = abs(res_res_difficulty))
+# 
+# model %>%
+#   summary()
+# 
+# good_full_data %>%
+#   ggplot(aes(x = vel, y = n_dist, z = res_res_difficulty)) +
+#   stat_summary_2d(breaks=breaks) +
+#   ggtitle("res res ~ velocity + distractors")
+# ```
+
+To explore the possiblity that our model is able to explain effort above and beyond a linear relationshop among design variables (velocity and number of distractors), we performed another partial regression analysis, removed shared variance of difficulty and allocated cycles with velocity and number of distractors. 
+Similar to before, a moderate but significant relationship survives and is at the upper limit of residual variance. 
+```{r}
+pred_compute <- good_full_data %>%
+  with(lm_robust(compute ~ vel + n_dist)) %>%
+  predict()
+pred_difficulty <- good_full_data %>%
+  with(lm_robust(difficulty_mu ~ vel + n_dist)) %>%
+  predict()
+
+good_full_data <- good_full_data %>%
+  mutate(res_difficulty = difficulty_mu - pred_difficulty,
+         res_compute = compute - pred_compute)
+
+good_full_data %>%
+  with(lm_robust(res_difficulty ~ res_compute)) %>%
+  summary()
+
+good_full_data %>%
+  ggplot(aes(x=res_compute, y=res_difficulty)) +
+  geom_point() + 
+  geom_smooth(method="lm_robust")
+```
+
+
+## Granularity
+
+Trackers that are dropped more than half the time vs trackers that aren't for human performance
+
+> TODO: obtain dropping statistics. 
+
+(scene 9)
+
+(counting rank order prediction; ie 40 / 65 trials have for multi-res, vs none)
+
+
+# plot td comparison for each tracker
+```{r}
+human_tracker <- good_full_data %>%
+  select(c(scene, contains("td") & contains("mu"), contains("td") & contains("sd"))) %>%
+  select(-c(td_chain_sd, td_mu, td_sd)) %>%
+  pivot_longer(
+    cols = starts_with("td_"),
+    names_to = "tracker",
+    names_prefix = "td_",
+    values_to = "human"
+  ) %>%
+  filter(tracker != "mu") %>%
+  separate(tracker, c("t", "stat")) %>%
+  mutate(tracker = as.numeric(t)) %>%
+  select(-t)
+
+tracker_comparison <- good_full_data %>%
+  select(c(scene, starts_with("tracker_"))) %>%
+  select(c(scene, contains("mu"), contains("sd"))) %>%
+  pivot_longer(
+    cols = starts_with("tracker_"),
+    names_to = "tracker",
+    names_prefix = "tracker_",
+    values_to = "model"
+  ) %>%
+  separate(tracker, c("t", "stat")) %>%
+  mutate(tracker = as.numeric(t)) %>%
+  select(-t) %>%
+  left_join(human_tracker) %>%
+  pivot_longer(
+    cols = c(human, model),
+    names_to = c("organism", NA),
+    names_sep = "_",
+    values_to = "val"
+  ) %>%   
+  arrange(scene, tracker) %>%
+  group_by(scene, organism) %>%
+  mutate(rank = dense_rank(val))
+
+tracker_comparison %>%
+  select(-rank) %>%
+  filter(stat == "mu") %>%
+  pivot_wider(
+    names_from = organism,
+    values_from = val
+  ) %>%
+  with(lm_robust(human ~ model)) %>%
+  summary
+
+tracker_comparison %>%
+  select(-rank) %>%  
+  filter(stat == "mu") %>%
+  pivot_wider(
+    names_from = organism,
+    values_from = val
+  ) %>%
+  ggplot(aes(x=model, y=human, color = factor(tracker))) +
+  geom_point()
+
+tracker_comparison %>%
+  select(-rank) %>%  
+  pivot_wider(
+    names_from = stat,
+    values_from = val
+  ) %>%
+  ggplot(aes(x=mu, y=sd, color = factor(scene))) +
+  ylim(-0.1, 0.6) +
+  geom_density_2d_filled() + 
+  geom_point() +
+  facet_grid(rows = "organism") + 
+  theme(legend.position = "none")
+
+good_full_data %>%
+  select(scene, vel, n_dist) %>%
+  left_join(tracker_comparison) %>%
+  select(-rank) %>%  
+  pivot_wider(
+    names_from = stat,
+    values_from = val
+  ) %>%
+  ggplot(aes(x=mu, y=sd, )) +
+  ylim(-0.1, 0.6) +
+  # geom_density_2d_filled() + 
+  geom_point(aes(color = vel)) +
+  facet_grid(organism ~ n_dist)
+
+```

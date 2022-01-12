@@ -1,0 +1,781 @@
+---
+title: "Exp 2"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+header-includes:
+ \usepackage{booktabs}
+ \usepackage{longtable}
+ \usepackage{array}
+ \usepackage{multirow}
+ \usepackage{wrapfig}
+ \usepackage{float}
+ \floatplacement{figure}{H}
+---
+
+# Setup
+
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(fig.pos = 'H', 
+                      echo=TRUE, warning=FALSE, message=FALSE)
+
+```
+```{r , include=FALSE}
+library(tidyverse)
+library(estimatr)
+library(ggplot2)
+library(readr)
+
+
+th <- theme_minimal()
+theme_set(th)
+```
+
+load data (subject, exp, scenes)
+
+
+## Model and Design data
+
+> TODO: look at mode of predicted assignment
+
+Loading non-subject data 
+
+```{r echo=FALSE, results='hide'}
+
+# scene, frame
+probe_timings <- read_csv("../data/exp2/exp2_probe_map_random.csv") %>%
+  filter(scene <= 40) %>%
+  group_by(scene, frame) %>%
+  summarise() %>%
+  ungroup() %>%
+  mutate(probe = frame) %>%
+  group_by(scene) %>%
+  mutate(epoch = dense_rank(frame)) %>%
+  ungroup()
+
+# scene, frame, tracker, eccentricity...
+prep_ecc_data <- read_csv("../data/exp2/exp2_probe_map_random_eccentricity.csv") %>%
+  filter(scene <= 40) %>%
+  select(-zatt)
+
+# accuracy per tracker
+# scene, tracker, acc, chain
+model_perf <- read_csv("../data/exp2/exp2_probes_target_designation_perf.csv") %>%
+  group_by(scene, tracker) %>%
+  summarise(across(td_acc, list(mu = mean, sd = sd)))
+
+# cycles per frame
+# scene, frame, tracker, cycles, chain
+model_att <- read_csv("../data/exp2/exp2_probes_target_designation_att.csv") %>%
+  group_by(scene, frame, tracker) %>%
+  summarise(across(-chain, list(mu = mean, sd = sd))) %>%
+  ungroup() %>%
+  mutate(cycles_mu = cycles_mu + 1, # padding to allow for log
+         zatt = scale(attention_mu),
+         log_att = log(cycles_mu))
+
+```
+
+```{r results='hide'}
+
+# normalize distance to nearest distractor and distance to tracker centroid
+ecc_data <- prep_ecc_data %>%
+  rename(tttm = tracker_to_tracker_mean) %>%
+  mutate(dist_to_nd = scale(dist_to_nd),
+         log_tttm = log(tttm)) %>%
+  # add epochs
+  group_by(scene) %>%
+  mutate(epoch = dense_rank(frame)) %>% 
+  ungroup()
+
+
+model_smoothing = 24
+# add lag and lead att values
+# also add cumulative att
+# and smoothing
+inf_data <- model_att %>%
+  group_by(scene, tracker) %>%
+  mutate(across(contains("att"), list(lag = ~lag(.x, 10))),
+         across(!contains("lag")  & contains("att"), list(lead = ~lead(.x, 10))),
+         cum_att = cumsum(cycles_mu),
+         cum_zatt = cumsum(zatt)/frame,
+         zatt_and_lag = zatt + zatt_lag) %>%
+  # add attention quartiles 
+  mutate(att_pct = pnorm(zatt),
+         att_scored_qtl = case_when(between(att_pct, 0, 0.25) ~ 1,
+                                    between(att_pct, 0.25, 0.50) ~ 2,
+                                    between(att_pct, 0.50, 0.75) ~ 3,
+                                    TRUE ~ 4)) %>%
+  mutate(att_scored_qtl = factor(att_scored_qtl, levels = c(1,2,3,4)),
+         high_att = att_scored_qtl == 4) %>%
+  # add smoothing
+  nest_by() %>%
+  mutate(att_xy = list(with(data,
+                          ksmooth(frame, attention_mu, kernel = "normal", 
+                                  bandwidth = model_smoothing)))) %>%
+  mutate(att_smoothed = list(att_xy$y)) %>%
+  unnest(cols = c(data, att_smoothed)) %>%
+  dplyr::select(-c(att_xy)) %>%
+  ungroup()
+
+# sum up the total amount of attention
+# and computed weighted tracker centroids
+tau = 5
+total_att <- inf_data %>%
+  group_by(scene, frame) %>%
+  summarise(total_att = sum(att_smoothed),
+            total_exp_att = sum(exp(att_smoothed / tau)),
+            weighted_x = sum(pred_x_mu * exp(att_smoothed / tau) / total_exp_att),
+            weighted_y = sum(pred_y_mu * exp(att_smoothed / tau) / total_exp_att)) %>%
+  ungroup()
+
+# total_att <- inf_data %>%
+#   group_by(scene, frame) %>%
+#   summarise(total_att = sum(att_smoothed),
+#             total_exp_att = sum(att_smoothed / tau),
+#             weighted_x = sum(pred_x_mu * (att_smoothed / tau) / total_exp_att),
+#             weighted_y = sum(pred_y_mu * (att_smoothed / tau) / total_exp_att)) %>%
+#   ungroup()
+
+
+# add distance to weighted and unweighted tracker means
+inf_data <- inf_data %>%
+  left_join(total_att, by = c("scene", "frame")) %>%
+  mutate(ttwm = sqrt((weighted_x - pred_x_mu)^2 + (weighted_y - pred_y_mu)^2),
+         log_ttwm = log(ttwm),
+        ) %>%
+  group_by(scene, frame) %>%
+  mutate(ttwm = scale(ttwm)) %>%
+  ungroup()
+
+exp_data <- ecc_data %>%
+  left_join(inf_data, by = c("scene", "frame", "tracker"))
+```
+
+## Subject Data
+
+screen bad subjects
+
+
+```{r echo=TRUE, results='hide'}
+subject_data <- read_csv("../data/exp2/parsed_trials.csv") %>%
+  select(-c(WID)) %>%
+  replace_na(list(response_frame = Inf))
+
+hit_window = 36
+probe_space = 60
+with_probes <- subject_data %>%
+  nest_by(ID) %>%
+  mutate(full = list(right_join(data, probe_timings, by = "scene"))) %>%
+  select(-data) %>%
+  unnest(cols = full) %>%
+  mutate(delta_t = response_frame - frame,
+         hit = between(delta_t, 0, hit_window),
+         fp = between(delta_t, hit_window+1, probe_space)) %>%
+  ungroup()
+```
+
+
+
+
+```{r}
+hr_by_subj_scene <- with_probes %>%
+  group_by(ID, scene, probe) %>%
+  summarise(hit = any(hit)) %>%
+  group_by(ID, scene) %>%
+  summarise(hr = mean(hit))
+
+fp_by_subj_scene <- with_probes %>%
+  group_by(ID, scene, response_frame) %>%
+  summarise(fp = any(fp)) %>%
+  group_by(ID, scene) %>%
+  summarise(fpr = mean(fp))
+
+probe_by_subj <- hr_by_subj_scene %>%
+  left_join(fp_by_subj_scene) %>%
+  group_by(ID) %>%
+  summarise(hr = mean(hr),
+            fp = mean(fpr))
+
+td_by_subj_tracker <- subject_data %>%
+  pivot_longer(cols = starts_with("td"), 
+               names_to = "tracker", 
+               values_to = "td") %>%
+  separate(tracker, c("NA", "tracker")) %>%
+  mutate(tracker = as.numeric(tracker)) %>%
+  group_by(ID, scene, tracker) %>%
+  summarise(td = first(td)) 
+
+td_by_subj_scene <- td_by_subj_tracker %>%
+  group_by(ID, scene) %>%
+  summarise(td = mean(td))
+
+td_by_subj <- td_by_subj_tracker %>%
+  group_by(ID) %>%
+  summarise(td_acc_mu = mean(td),
+            n = n(),
+            td_acc_se = sd(td) / sqrt(n)) 
+
+perf_thresh = 3.0
+subject_performance <- td_by_subj %>%
+  left_join(probe_by_subj) %>%
+  mutate(passed = (td_acc_mu - 0.5) > perf_thresh*td_acc_se & hr - fp > 0.1,
+         high_perf = hr - fp > 0.4)
+
+good_subjects_data <- subject_performance %>%
+  filter(passed) %>%
+  select(ID) %>%
+  left_join(with_probes, by = "ID") %>%
+  left_join(hr_by_subj_scene) %>%
+  left_join(td_by_subj_scene, by = c("ID", "scene")) %>%
+  ungroup() 
+# %>%
+# filter(td == 1)
+
+
+```
+
+# Analysis
+
+
+
+## Causal effects
+
+First collect all data points (no averaging across scene)
+
+The the average treatment effect, ATE, is indentified over attention on probe detection
+regardless of target designation accuracy.
+
+The condititional average treatement effect, CATE, is the ATE conditioned on
+correct (4/4) target designation.
+
+
+```{r}
+hr_by_probe <- good_subjects_data %>%
+  # sorting out probed tracker
+  pivot_longer(cols = starts_with("probe_"), 
+               names_to = "probed_tracker_epoch",
+               values_to = "tracker") %>%
+  separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
+  mutate(probed_tracker_epoch = as.numeric(probed_tracker_epoch)) %>%
+  group_by(ID, scene, probe, epoch, probed_tracker_epoch, tracker) %>%
+  filter(probed_tracker_epoch == epoch) %>%
+  summarise(hit = any(hit),
+            td = mean(td),
+            n = n()) %>%
+  ungroup() %>%
+  group_by(scene, epoch, probe, tracker) %>%
+  summarise(hr = mean(hit),
+            td = mean(td),
+            n = n()) %>%
+  ungroup()
+
+ate_by_probe <- hr_by_probe %>%
+  mutate(frame = probe) %>%
+  left_join(exp_data, by = c("scene", "epoch", "frame", "tracker")) %>%
+  group_by(scene) %>%
+  mutate(ttwm_rank = rank(ttwm),
+         hr.rank = rank(hr)) %>%
+  ungroup() 
+# %>%
+#   filter(scene != 37, scene != 22)
+
+```
+
+
+
+## Sanity checks for scene level variation
+
+```{r}
+
+ate_by_probe %>%
+  ggplot(aes(hr, fill = factor(scene))) +
+  geom_histogram() +
+  guides(color = FALSE)
+
+ate_by_probe %>%
+  summarise(acc = mean(td))
+model_perf %>%
+  ungroup() %>%
+  summarise(a.cc = mean(td_acc_mu))
+
+cum_att <- inf_data %>%
+  group_by(scene) %>%
+  filter(frame == max(frame)) %>%
+  summarize(final_catt = sum(cum_att)) %>%
+  select(c(scene, final_catt)) %>%
+  right_join(ate_by_probe, by = "scene") %>%
+  mutate(final_catt = scale(final_catt))
+
+# cum_att %>%
+#   group_by(scene) %>%
+#   summarise(hr_mu = mean(hr),
+#             hr_sd = sd(hr),
+#             total_att = first(final_catt),
+#             p_is_target_mu = first(p_is_target_mu),
+#             ) %>%
+#   arrange(hr_mu) %>%
+#   ggplot(aes(y = hr_mu, x =reorder(scene, hr_mu))) +
+#   geom_point() +
+#   geom_errorbar(aes(ymin = hr_mu - hr_sd, ymax = hr_mu + hr_sd))
+```
+
+<!-- Looking at trial order -->
+
+<!-- ```{r} -->
+<!-- good_subjects_data %>% -->
+<!--   filter(pbh) %>% -->
+<!--   ggplot(aes(x = TrialOrder)) + -->
+<!--   geom_bar() + -->
+<!--   facet_grid(rows = vars(ID)) -->
+
+<!-- good_subjects_data %>% -->
+<!--   group_by(TrialOrder) %>% -->
+<!--   summarise(probe_fp = mean(probe_fp), -->
+<!--             d.prime = qnorm(mean(pbh) * 0.998 + 0.001) - qnorm(probe_fp*0.998 + 0.001)) %>% -->
+<!--   ggplot(aes(x = TrialOrder, y = d.prime)) + -->
+<!--   geom_col() -->
+
+<!-- ``` -->
+
+
+Focusing on specific scene
+
+```{r}
+spec_scene = c(13, 16)
+
+ate_by_probe %>%
+  filter(scene %in% spec_scene) %>% 
+  select(scene, epoch, tracker, hr, td, ttwm, zatt) %>%
+  arrange(scene, epoch)
+
+# good_subjects_data %>%
+#   filter(scene %in% spec_20472288scene) %>%
+#   view()
+
+timing_data <- good_subjects_data %>%
+  ungroup() %>%
+  filter(scene %in% spec_scene) %>%
+  nest_by(ID) %>%
+  mutate(idata = list(filter(inf_data, scene %in% spec_scene)),
+         full = list(left_join(idata, data, by = c("scene", "frame")))) %>%
+  select(-c(data, idata)) %>%
+  unnest(cols = full) %>%
+  select(scene, frame, tracker, ttwm, att_smoothed, probe, ID, response_frame) %>%
+  ungroup()
+
+timing_data %>%
+  ggplot(aes(x = frame)) +
+  geom_line(aes(y = ttwm, color = factor(tracker))) +
+  # geom_point(aes(y = attention_mu * 50, color = factor(tracker)),)+
+  geom_vline(aes(xintercept = probe, color = "probe_onset"), linetype = "dashed") + 
+  # geom_vline(aes(xintercept = probe + hit_window, color = "fp_cutoff"), linetype = "longdash") +
+  # geom_vline(aes(xintercept = probe + probe_space, color = "trial_cutoff")) + 
+  # geom_histogram(aes(x =  response_frame), binwidth = 6) +
+  facet_grid(rows = vars(scene))
+```
+
+```{r}
+
+delay_by_probe <- good_subjects_data %>%
+  # sorting out probed tracker
+  pivot_longer(cols = starts_with("probe_"), 
+               names_to = "probed_tracker_epoch",
+               values_to = "tracker") %>%
+  separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
+  mutate(probed_tracker_epoch = as.numeric(probed_tracker_epoch)) %>%
+  filter(probed_tracker_epoch == epoch, hit) %>%
+  group_by(scene, probe, epoch, probed_tracker_epoch, tracker) %>%
+  summarise(delay.mu = mean(delta_t),
+            n = n(),
+            delay.se = sd(delta_t) / sqrt(n)) %>%
+  ungroup()
+
+delay_ate_by_probe <- delay_by_probe %>%
+  mutate(frame = probe) %>%
+  left_join(exp_data, by = c("scene", "epoch", "frame", "tracker")) %>%
+  group_by(scene) %>%
+  mutate(ttwm_rank = rank(ttwm),
+         delay.rank = rank(delay.mu),
+         delay.conf_high = delay.mu + delay.se,
+         delay.conf_low = delay.mu - delay.se) %>%
+  ungroup()
+```
+
+```{r}
+spec_scene = 1:3
+
+delay_ate_by_probe %>%
+  filter(scene %in% spec_scene) %>% 
+  select(scene, frame, tracker, delay.mu, delay.se, ttwm, zatt) %>%
+  arrange(scene, ttwm)
+
+# good_subjects_data %>%
+#   filter(scene %in% spec_scene) %>%
+#   view()
+
+subject_performance %>%
+  filter(passed) %>%
+  ggplot(aes(x = factor(ID), y = hr - fp)) +
+  geom_col()
+```
+
+
+
+## Effect of weighted tracker centroid on hit rate
+
+
+First take a look at just the tracker centroid mean
+
+```{r}
+
+ate_by_probe %>%
+  ggplot(aes(x = ttwm, y = tttm)) +
+  geom_point(aes(color = high_att))
+
+ate_by_probe %>%
+  ggplot(aes(x = tttm, y = hr)) +
+  geom_point(aes(color = high_att))
+
+
+ate_by_probe %>%
+  ggplot(aes(x = ttwm, y = hr)) +
+  geom_point(aes(color = high_att))
+
+wtm_fit <- ate_by_probe %>%
+  with(lm_robust(hr ~ ttwm,))
+wtm_fit %>%
+  summary()
+
+ttm_fit <- ate_by_probe %>%
+  with(lm_robust(hr ~ tttm))
+ttm_fit %>%
+  summary()
+
+# for effect size + conf interval
+ate_by_probe %>%
+  with(lm(hr ~ ttwm + tttm)) %>%
+  summary()
+
+
+
+```
+
+
+### Res-res Attention centroid
+
+```{r}
+
+
+
+# for variance explained
+
+tttm_ttwm <- ate_by_probe %>%
+  with(lm(ttwm ~ tttm))
+tttm_ttwm %>%
+  summary()
+
+
+ate_by_probe$pred_ttwm <- tttm_ttwm %>%
+  predict(ate_by_probe)
+
+tttm_hr <- ate_by_probe %>%
+  with(lm(hr ~ tttm))
+
+tttm_hr %>%
+  summary()
+
+
+ate_by_probe$pred_hr <- tttm_hr %>%
+  predict(ate_by_probe)
+
+ate_by_probe <- ate_by_probe %>%
+  mutate(res_ttwm = ttwm - pred_ttwm,
+         abs_res_ttwm = abs(res_ttwm),
+         res_hr = hr - pred_hr)
+
+
+res_res_fit <- ate_by_probe %>%
+  with(lm(res_hr ~ res_ttwm))
+res_res_fit %>% 
+  summary()
+
+ate_by_probe$pred_res_hr <- res_res_fit %>%
+  predict(ate_by_probe)
+ate_by_probe <- ate_by_probe %>%
+  mutate(res_res_hr = res_hr - pred_res_hr)
+
+ate_by_probe %>%
+  top_n(5, abs(res_res_hr))
+ate_by_probe %>%
+  top_n(-5, abs(res_res_hr))
+
+ate_by_probe %>%
+  ggplot(aes(x = res_ttwm, y = res_hr)) +
+  geom_point() + 
+  geom_smooth(method = "lm")
+
+interesting_scenes <- ate_by_probe %>%
+  select(scene, tracker, frame, hr, attention_mu, pred_x_mu, pred_y_mu, ttwm, tttm, abs_res_ttwm, res_res_hr) %>%
+  mutate(dcenter = sqrt(pred_x_mu*pred_x_mu + pred_y_mu * pred_y_mu),
+         res_res_hr = abs(res_res_hr)) %>%
+  arrange(res_res_hr, abs_res_ttwm)
+
+```
+
+Reverse partial regression
+
+```{r}
+
+# for variance explained
+
+ttwm_tttm <- ate_by_probe %>%
+  with(lm(tttm ~ ttwm))
+ttwm_tttm %>%
+  summary()
+
+
+ate_by_probe$pred_tttm <- ttwm_tttm %>%
+  predict(ate_by_probe)
+
+ttwm_hr <- ate_by_probe %>%
+  with(lm(hr ~ ttwm))
+
+ttwm_hr %>%
+  summary()
+
+
+ate_by_probe$pred_hr <- ttwm_hr %>%
+  predict(ate_by_probe)
+
+ate_by_probe <- ate_by_probe %>%
+  mutate(res_tttm = tttm - pred_tttm,
+         res_hr = hr - pred_hr)
+
+
+res_res_fit <- ate_by_probe %>%
+  with(lm(res_hr ~ res_tttm))
+res_res_fit %>% 
+  summary()
+
+ate_by_probe %>%
+  ggplot(aes(x = res_tttm, y = res_hr)) +
+  geom_point(aes(color = high_att)) + 
+  geom_smooth(method = "lm")
+
+
+```
+### Looking at subject bimodality
+
+```{r}
+
+split_hr_by_probe <- good_subjects_data %>%
+  # sorting out probed tracker
+  pivot_longer(cols = starts_with("probe_"), 
+               names_to = "probed_tracker_epoch",
+               values_to = "tracker") %>%
+  separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
+  mutate(probed_tracker_epoch = as.numeric(probed_tracker_epoch)) %>%
+  group_by(ID, scene, probe, epoch, probed_tracker_epoch, tracker) %>%
+  filter(probed_tracker_epoch == epoch) %>%
+  summarise(hit = any(hit),
+            td = mean(td),
+            n = n()) %>%
+  ungroup() %>%
+  left_join(subject_performance, by = c("ID")) %>%
+  group_by(scene, epoch, probe, tracker, high_perf) %>%
+  summarise(hr = mean(hit),
+            td = mean(td),
+            n = n()) %>%
+  ungroup()
+
+split_ate_by_probe <- split_hr_by_probe %>%
+  mutate(frame = probe) %>%
+  left_join(exp_data, by = c("scene", "epoch", "frame", "tracker")) %>%
+  ungroup() %>%
+  filter(high_perf)
+
+split_ate_by_probe %>%
+  ggplot(aes(x = ttwm, y = hr)) + 
+  geom_point() + 
+  geom_smooth(method = "lm") + 
+  facet_wrap(vars(high_perf))
+
+
+
+tttm_ttwm <- split_ate_by_probe %>%
+  with(lm(zttwm ~ ztttm))
+tttm_ttwm %>%
+  summary()
+
+
+split_ate_by_probe$pred_ttwm <- tttm_ttwm %>%
+  predict(split_ate_by_probe)
+
+tttm_hr <- split_ate_by_probe %>%
+  with(lm(hr ~ ztttm))
+
+tttm_hr %>%
+  summary()
+
+
+split_ate_by_probe$pred_hr <- tttm_hr %>%
+  predict(split_ate_by_probe)
+
+split_ate_by_probe <- split_ate_by_probe %>%
+  mutate(res_ttwm = zttwm - pred_ttwm,
+         res_hr = hr - pred_hr)
+
+
+res_res_fit <- split_ate_by_probe %>%
+  with(lm(res_hr ~ res_ttwm))
+res_res_fit %>% 
+  summary()
+
+split_ate_by_probe$pred_res_hr <- res_res_fit %>%
+  predict(split_ate_by_probe)
+split_ate_by_probe <- split_ate_by_probe %>%
+  mutate(res_res_hr = res_hr - pred_res_hr)
+
+split_ate_by_probe %>%
+  ggplot(aes(x = res_ttwm, y = res_hr)) +
+  geom_point() + 
+  geom_smooth(method = "lm")
+
+ttwm_tttm <- split_ate_by_probe %>%
+  with(lm_robust(ztttm ~ zttwm,
+                 # fixed_effects = ~ scene
+                 ))
+ttwm_tttm %>%
+  summary()
+
+
+split_ate_by_probe$pred_tttm <- ttwm_tttm %>%
+  predict(split_ate_by_probe)
+
+ttwm_hr <- split_ate_by_probe %>%
+  with(lm_robust(hr ~ zttwm))
+
+ttwm_hr %>%
+  summary()
+
+
+split_ate_by_probe$pred_hr <- ttwm_hr %>%
+  predict(split_ate_by_probe)
+
+split_ate_by_probe <- split_ate_by_probe %>%
+  mutate(res_tttm = ztttm - pred_tttm,
+         res_hr = hr - pred_hr)
+
+
+res_res_fit <- split_ate_by_probe %>%
+  with(lm_robust(res_hr ~ res_tttm))
+res_res_fit %>% 
+  summary()
+```
+
+
+```{r}
+
+# for effect size + conf interval
+ate_by_probe %>%
+  with(lm_robust(hr ~ zttwm + tracker_to_dot_mean )) %>%
+  summary()
+
+# for variance explained
+
+tttm_ttwm <- ate_by_probe %>%
+  with(lm_robust(zttwm ~ tracker_to_dot_mean,
+                 # fixed_effects = ~ scene
+                 ))
+tttm_ttwm %>%
+  summary()
+
+
+ate_by_probe$pred_ttwm <- tttm_ttwm %>%
+  predict(ate_by_probe)
+
+tttm_hr <- ate_by_probe %>%
+  with(lm_robust(hr ~ tracker_to_dot_mean))
+
+tttm_hr %>%
+  summary()
+
+
+ate_by_probe$pred_hr <- tttm_hr %>%
+  predict(ate_by_probe)
+
+ate_by_probe <- ate_by_probe %>%
+  mutate(res_ttwm = zttwm - pred_ttwm,
+         res_hr = hr - pred_hr)
+
+
+res_res_fit <- ate_by_probe %>%
+  with(lm_robust(res_hr ~ res_ttwm))
+res_res_fit %>% 
+  summary()
+
+ate_by_probe %>%
+  ggplot(aes(x = res_ttwm, y = res_hr)) +
+  geom_point(aes(color = tracker_to_dot_mean)) + 
+  geom_smooth(method = "lm")
+
+
+```
+with fixed effects 
+
+```{r}
+
+# for effect size + conf interval
+ate_by_probe %>%
+  with(lm_robust(hr ~ zttwm + ztttm, fixed_effects =  ~ scene)) %>%
+  summary()
+
+# for variance explained
+
+tttm_ttwm <- ate_by_probe %>%
+  with(lm_robust(zttwm ~ ztttm, fixed_effects =  ~ scene))
+tttm_ttwm %>%
+  summary()
+
+
+ate_by_probe$pred_ttwm <- tttm_ttwm %>%
+  predict(ate_by_probe)
+
+tttm_hr <- ate_by_probe %>%
+  with(lm_robust(hr ~ ztttm, fixed_effects =  ~ scene))
+
+tttm_hr %>%
+  summary()
+
+
+ate_by_probe$pred_hr <- tttm_hr %>%
+  predict(ate_by_probe)
+
+ate_by_probe <- ate_by_probe %>%
+  mutate(res_ttwm = zttwm - pred_ttwm,
+         res_hr = hr - pred_hr)
+
+
+res_res_fit <- ate_by_probe %>%
+  with(lm_robust(res_hr ~ res_ttwm))
+res_res_fit %>% 
+  summary()
+
+ate_by_probe$pred_res_hr <- res_res_fit %>%
+  predict(ate_by_probe)
+ate_by_probe <- ate_by_probe %>%
+  mutate(res_res_hr = res_hr - pred_res_hr)
+
+ate_by_probe %>%
+  top_n(5, abs(res_res_hr))
+ate_by_probe %>%
+  top_n(-5, abs(res_res_hr))
+
+ate_by_probe %>%
+  ggplot(aes(x = res_ttwm, y = res_hr)) +
+  geom_point(aes(color = log_att_lead)) + 
+  geom_smooth(method = "lm")
+
+```
