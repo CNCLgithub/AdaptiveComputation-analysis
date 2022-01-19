@@ -71,7 +71,7 @@ model_att <- read_csv("../data/exp2/exp2_probes_target_designation_att.csv") %>%
   group_by(scene, frame, tracker) %>%
   summarise(across(-chain, list(mu = mean, sd = sd))) %>%
   ungroup() %>%
-  mutate(cycles_mu = cycles_mu + 1, # padding to allow for log
+  mutate(cycles_mu = cycles_mu + 0.1, # padding to allow for log
          zatt = scale(attention_mu),
          log_att = log(cycles_mu))
 
@@ -90,7 +90,7 @@ ecc_data <- prep_ecc_data %>%
   ungroup()
 
 
-model_smoothing = 24
+model_smoothing = 18
 # add lag and lead att values
 # also add cumulative att
 # and smoothing
@@ -112,7 +112,7 @@ inf_data <- model_att %>%
   # add smoothing
   nest_by() %>%
   mutate(att_xy = list(with(data,
-                          ksmooth(frame, attention_mu, kernel = "normal", 
+                          ksmooth(frame, cycles_mu, kernel = "normal", 
                                   bandwidth = model_smoothing)))) %>%
   mutate(att_smoothed = list(att_xy$y)) %>%
   unnest(cols = c(data, att_smoothed)) %>%
@@ -121,32 +121,32 @@ inf_data <- model_att %>%
 
 # sum up the total amount of attention
 # and computed weighted tracker centroids
-tau = 5
-total_att <- inf_data %>%
-  group_by(scene, frame) %>%
-  summarise(total_att = sum(att_smoothed),
-            total_exp_att = sum(exp(att_smoothed / tau)),
-            weighted_x = sum(pred_x_mu * exp(att_smoothed / tau) / total_exp_att),
-            weighted_y = sum(pred_y_mu * exp(att_smoothed / tau) / total_exp_att)) %>%
-  ungroup()
-
+tau = 7.5
 # total_att <- inf_data %>%
 #   group_by(scene, frame) %>%
 #   summarise(total_att = sum(att_smoothed),
-#             total_exp_att = sum(att_smoothed / tau),
-#             weighted_x = sum(pred_x_mu * (att_smoothed / tau) / total_exp_att),
-#             weighted_y = sum(pred_y_mu * (att_smoothed / tau) / total_exp_att)) %>%
+#             total_exp_att = sum(exp(att_smoothed / tau)),
+#             weighted_x = sum(pred_x_mu * exp(att_smoothed / tau) / total_exp_att),
+#             weighted_y = sum(pred_y_mu * exp(att_smoothed / tau) / total_exp_att)) %>%
 #   ungroup()
+
+total_att <- inf_data %>%
+  group_by(scene, frame) %>%
+  summarise(total_att = sum(att_smoothed),
+            weighted_x = sum(pred_x_mu * (att_smoothed) / total_att),
+            weighted_y = sum(pred_y_mu * (att_smoothed) / total_att)) %>%
+  ungroup()
 
 
 # add distance to weighted and unweighted tracker means
 inf_data <- inf_data %>%
+    # filter(scene == 4) %>% 
   left_join(total_att, by = c("scene", "frame")) %>%
   mutate(ttwm = sqrt((weighted_x - pred_x_mu)^2 + (weighted_y - pred_y_mu)^2),
          log_ttwm = log(ttwm),
         ) %>%
   group_by(scene, frame) %>%
-  mutate(ttwm = scale(ttwm)) %>%
+  # mutate(ttwm = scale(ttwm)) %>%
   ungroup()
 
 exp_data <- ecc_data %>%
@@ -217,10 +217,10 @@ td_by_subj <- td_by_subj_tracker %>%
             n = n(),
             td_acc_se = sd(td) / sqrt(n)) 
 
-perf_thresh = 3.0
+perf_thresh = 2.0
 subject_performance <- td_by_subj %>%
   left_join(probe_by_subj) %>%
-  mutate(passed = (td_acc_mu - 0.5) > perf_thresh*td_acc_se & hr - fp > 0.1,
+  mutate(passed = (td_acc_mu - 0.5) > perf_thresh*td_acc_se & (hr - fp > 0.05),
          high_perf = hr - fp > 0.4)
 
 good_subjects_data <- subject_performance %>%
@@ -277,7 +277,7 @@ ate_by_probe <- hr_by_probe %>%
   group_by(scene) %>%
   mutate(ttwm_rank = rank(ttwm),
          hr.rank = rank(hr)) %>%
-  ungroup() 
+  ungroup()
 # %>%
 #   filter(scene != 37, scene != 22)
 
@@ -372,7 +372,7 @@ timing_data %>%
   geom_vline(aes(xintercept = probe, color = "probe_onset"), linetype = "dashed") + 
   # geom_vline(aes(xintercept = probe + hit_window, color = "fp_cutoff"), linetype = "longdash") +
   # geom_vline(aes(xintercept = probe + probe_space, color = "trial_cutoff")) + 
-  # geom_histogram(aes(x =  response_frame), binwidth = 6) +
+  geom_histogram(aes(x =  response_frame), binwidth = 6) +
   facet_grid(rows = vars(scene))
 ```
 
@@ -404,16 +404,11 @@ delay_ate_by_probe <- delay_by_probe %>%
 ```
 
 ```{r}
-spec_scene = 1:3
-
-delay_ate_by_probe %>%
-  filter(scene %in% spec_scene) %>% 
-  select(scene, frame, tracker, delay.mu, delay.se, ttwm, zatt) %>%
-  arrange(scene, ttwm)
-
-# good_subjects_data %>%
-#   filter(scene %in% spec_scene) %>%
-#   view()
+ate_by_probe %>%
+  group_by(epoch) %>%
+  summarise(hr = mean(hr)) %>%
+  ggplot(aes(x = epoch, y = hr)) +
+  geom_col()
 
 subject_performance %>%
   filter(passed) %>%
@@ -516,6 +511,9 @@ ate_by_probe %>%
   geom_point() + 
   geom_smooth(method = "lm")
 
+model_att %>%
+  filter(scene == 4)
+
 interesting_scenes <- ate_by_probe %>%
   select(scene, tracker, frame, hr, attention_mu, pred_x_mu, pred_y_mu, ttwm, tttm, abs_res_ttwm, res_res_hr) %>%
   mutate(dcenter = sqrt(pred_x_mu*pred_x_mu + pred_y_mu * pred_y_mu),
@@ -594,7 +592,7 @@ split_ate_by_probe <- split_hr_by_probe %>%
   mutate(frame = probe) %>%
   left_join(exp_data, by = c("scene", "epoch", "frame", "tracker")) %>%
   ungroup() %>%
-  filter(high_perf)
+filter(high_perf)
 
 split_ate_by_probe %>%
   ggplot(aes(x = ttwm, y = hr)) + 
@@ -605,7 +603,7 @@ split_ate_by_probe %>%
 
 
 tttm_ttwm <- split_ate_by_probe %>%
-  with(lm(zttwm ~ ztttm))
+  with(lm(ttwm ~ tttm))
 tttm_ttwm %>%
   summary()
 
@@ -614,7 +612,7 @@ split_ate_by_probe$pred_ttwm <- tttm_ttwm %>%
   predict(split_ate_by_probe)
 
 tttm_hr <- split_ate_by_probe %>%
-  with(lm(hr ~ ztttm))
+  with(lm(hr ~ tttm))
 
 tttm_hr %>%
   summary()
@@ -624,7 +622,7 @@ split_ate_by_probe$pred_hr <- tttm_hr %>%
   predict(split_ate_by_probe)
 
 split_ate_by_probe <- split_ate_by_probe %>%
-  mutate(res_ttwm = zttwm - pred_ttwm,
+  mutate(res_ttwm = ttwm - pred_ttwm,
          res_hr = hr - pred_hr)
 
 
@@ -644,7 +642,7 @@ split_ate_by_probe %>%
   geom_smooth(method = "lm")
 
 ttwm_tttm <- split_ate_by_probe %>%
-  with(lm_robust(ztttm ~ zttwm,
+  with(lm_robust(tttm ~ ttwm,
                  # fixed_effects = ~ scene
                  ))
 ttwm_tttm %>%
@@ -655,7 +653,7 @@ split_ate_by_probe$pred_tttm <- ttwm_tttm %>%
   predict(split_ate_by_probe)
 
 ttwm_hr <- split_ate_by_probe %>%
-  with(lm_robust(hr ~ zttwm))
+  with(lm_robust(hr ~ ttwm))
 
 ttwm_hr %>%
   summary()
@@ -665,7 +663,7 @@ split_ate_by_probe$pred_hr <- ttwm_hr %>%
   predict(split_ate_by_probe)
 
 split_ate_by_probe <- split_ate_by_probe %>%
-  mutate(res_tttm = ztttm - pred_tttm,
+  mutate(res_tttm = tttm - pred_tttm,
          res_hr = hr - pred_hr)
 
 
