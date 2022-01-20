@@ -112,7 +112,7 @@ inf_data <- model_att %>%
   # add smoothing
   nest_by() %>%
   mutate(att_xy = list(with(data,
-                          ksmooth(frame, cycles_mu, kernel = "normal", 
+                          ksmooth(frame, attention_mu, kernel = "normal", 
                                   bandwidth = model_smoothing)))) %>%
   mutate(att_smoothed = list(att_xy$y)) %>%
   unnest(cols = c(data, att_smoothed)) %>%
@@ -121,21 +121,21 @@ inf_data <- model_att %>%
 
 # sum up the total amount of attention
 # and computed weighted tracker centroids
-tau = 7.5
-# total_att <- inf_data %>%
-#   group_by(scene, frame) %>%
-#   summarise(total_att = sum(att_smoothed),
-#             total_exp_att = sum(exp(att_smoothed / tau)),
-#             weighted_x = sum(pred_x_mu * exp(att_smoothed / tau) / total_exp_att),
-#             weighted_y = sum(pred_y_mu * exp(att_smoothed / tau) / total_exp_att)) %>%
-#   ungroup()
-
+tau = 17
 total_att <- inf_data %>%
   group_by(scene, frame) %>%
   summarise(total_att = sum(att_smoothed),
-            weighted_x = sum(pred_x_mu * (att_smoothed) / total_att),
-            weighted_y = sum(pred_y_mu * (att_smoothed) / total_att)) %>%
+            total_exp_att = sum(exp(att_smoothed / tau)),
+            weighted_x = sum(pred_x_mu * exp(att_smoothed / tau) / total_exp_att),
+            weighted_y = sum(pred_y_mu * exp(att_smoothed / tau) / total_exp_att)) %>%
   ungroup()
+
+# total_att <- inf_data %>%
+#   group_by(scene, frame) %>%
+#   summarise(total_att = sum(att_smoothed),
+#             weighted_x = sum(pred_x_mu * (att_smoothed) / total_att),
+#             weighted_y = sum(pred_y_mu * (att_smoothed) / total_att)) %>%
+#   ungroup()
 
 
 # add distance to weighted and unweighted tracker means
@@ -508,7 +508,7 @@ ate_by_probe %>%
 
 ate_by_probe %>%
   ggplot(aes(x = res_ttwm, y = res_hr)) +
-  geom_point() + 
+  geom_point(aes(color = high_att)) + 
   geom_smooth(method = "lm")
 
 model_att %>%
@@ -564,6 +564,94 @@ ate_by_probe %>%
 
 
 ```
+
+### high att trials
+
+```{r}
+
+high_att <- ate_by_probe %>%
+  filter(high_att)
+
+ate_by_probe %>%
+  ggplot(aes(x = ttwm, y = hr)) + 
+  geom_point() + 
+  geom_smooth(method = "lm") + 
+  facet_wrap(vars(high_att))
+
+
+
+tttm_ttwm <- high_att %>%
+  with(lm(ttwm ~ tttm))
+tttm_ttwm %>%
+  summary()
+
+
+high_att$pred_ttwm <- tttm_ttwm %>%
+  predict(high_att)
+
+tttm_hr <- high_att %>%
+  with(lm(hr ~ tttm))
+
+tttm_hr %>%
+  summary()
+
+
+high_att$pred_hr <- tttm_hr %>%
+  predict(high_att)
+
+high_att <- high_att %>%
+  mutate(res_ttwm = ttwm - pred_ttwm,
+         res_hr = hr - pred_hr)
+
+
+res_res_fit <- high_att %>%
+  with(lm(res_hr ~ res_ttwm))
+res_res_fit %>% 
+  summary()
+
+high_att$pred_res_hr <- res_res_fit %>%
+  predict(high_att)
+high_att <- high_att %>%
+  mutate(res_res_hr = res_hr - pred_res_hr)
+
+high_att %>%
+  ggplot(aes(x = res_ttwm, y = res_hr)) +
+  geom_point() + 
+  geom_smooth(method = "lm")
+
+ttwm_tttm <- high_att %>%
+  with(lm_robust(tttm ~ ttwm,
+                 # fixed_effects = ~ scene
+                 ))
+ttwm_tttm %>%
+  summary()
+
+
+high_att$pred_tttm <- ttwm_tttm %>%
+  predict(high_att)
+
+ttwm_hr <- high_att %>%
+  with(lm_robust(hr ~ ttwm))
+
+ttwm_hr %>%
+  summary()
+
+
+high_att$pred_hr <- ttwm_hr %>%
+  predict(high_att)
+
+high_att <- high_att %>%
+  mutate(res_tttm = tttm - pred_tttm,
+         res_hr = hr - pred_hr)
+
+
+res_res_fit <- high_att %>%
+  with(lm_robust(res_hr ~ res_tttm))
+res_res_fit %>% 
+  summary()
+
+```
+
 ### Looking at subject bimodality
 
 ```{r}
