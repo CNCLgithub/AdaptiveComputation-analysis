@@ -87,7 +87,7 @@ def parse_row(row, dataset):
     td_acc = sum(pred_targets and gt_targets)/sum(gt_targets)
     target_idxs = np.where(gt_targets)[0]
 
-    print(row.TrialName[:2])
+    # print(row.TrialName[:2])
     
     # some extra data for exp1_difficulty
     vel = dataset[row.scene-1]["aux_data"]["vel"]
@@ -109,10 +109,10 @@ def parse_row(row, dataset):
     template = {
         'WID' : row.WID,
         'scene' : row.TrialName[0],
-        'probe_id_1' : probe_trackers[0],
-        'probe_id_2' : probe_trackers[1],
-        'probe_id_3' : probe_trackers[2],
-        'probe_id_4' : probe_trackers[3],
+        # 'probe_id_1' : probe_trackers[0],
+        # 'probe_id_2' : probe_trackers[1],
+        # 'probe_id_3' : probe_trackers[2],
+        # 'probe_id_4' : probe_trackers[3],
         'td_1' : row.Target[target_idxs[0]],
         'td_2' : row.Target[target_idxs[1]],
         'td_3' : row.Target[target_idxs[2]],
@@ -120,6 +120,8 @@ def parse_row(row, dataset):
         'vel' : vel,
         'n_dist' : n_dist
     }
+    for (i, p) in enumerate(probe_trackers):
+        template['probe_id_{0:d}'.format(i+1)] = p
 
     cols = [{'response_frame' : rf, **template} for rf in response_frames]
     # in case no response is recorded
@@ -146,27 +148,30 @@ def main():
                         help = 'Experiment mode')
     parser.add_argument("--trialsbyp", type = int, default = 25,
                         help = 'Number of trials expected per subject')
-    parser.add_argument("--trialdata", type = str, default = '../data/exp2/parsed_trials.csv',
+    parser.add_argument("--trialdata", type = str, default = 'data/exp2/parsed_trials.csv',
                         help = 'Filename to dump parsed trial data')
-    parser.add_argument("--questiondata", type = str, default = '../data/exp2/parsed_questions.csv',
+    parser.add_argument("--questiondata", type = str, default = 'data/exp2/parsed_questions.csv',
                         help = 'Filename to dump parsed trial data questions')
 
     args = parser.parse_args()
     trs, qs = read_db(args.database, args.table_name, args.exp_flag, args.mode)
     dataset = read_json(args.dataset)
+    trs.drop('Difficulty', axis=1, inplace=True)
 
     qs = qs.rename(index=str, columns={'uniqueid': 'WID'})
 
     trs = trs.dropna()
-    print(trs)
     trs = trs.rename(index=str,
                      columns={'ReactionTime':'RT',
                               'uniqueid':'WID'})
+
+
     trs['scene'] = trs['TrialName'].apply(lambda r: r[0])
 
     row_data = pd.concat(trs.apply(parse_row, axis=1, args=(dataset,)).tolist())
     trs = trs[['scene', 'WID', 'RT', 'condition', 'TrialOrder']]
     trs = trs.merge(row_data, on = ['scene', 'WID'])
+
 
     # Make sure we have 120 observations per participant
     trialsbyp = trs.groupby('WID').aggregate({"scene" : lambda x : len(x.unique())})

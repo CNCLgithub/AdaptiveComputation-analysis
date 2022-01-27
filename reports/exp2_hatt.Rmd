@@ -1,5 +1,5 @@
 ---
-title: "Exp 2"
+title: "Exp 2 High Att"
 output:
   pdf_document: default
   html_document:
@@ -21,6 +21,12 @@ knitr::opts_chunk$set(fig.pos = 'H',
                       echo=TRUE, warning=FALSE, message=FALSE)
 
 ```
+
+```{r, include=FALSE}
+
+install.packages("pracma")
+```
+
 ```{r , include=FALSE}
 library(tidyverse)
 library(estimatr)
@@ -44,7 +50,7 @@ Loading non-subject data
 ```{r echo=FALSE, results='hide'}
 
 # scene, frame
-probe_timings <- read_csv("../data/exp2/exp2_probe_map_random.csv") %>%
+probe_timings <- read_csv("../data/exp2/exp2_probes_hatt_timings.csv") %>%
   filter(scene <= 40) %>%
   group_by(scene, frame) %>%
   summarise() %>%
@@ -55,9 +61,9 @@ probe_timings <- read_csv("../data/exp2/exp2_probe_map_random.csv") %>%
   ungroup()
 
 # scene, frame, tracker, eccentricity...
-prep_ecc_data <- read_csv("../data/exp2/exp2_probe_map_random_eccentricity.csv") %>%
-  filter(scene <= 40) %>%
-  select(-zatt)
+# prep_ecc_data <- read_csv("../data/exp2/exp2_probe_map_random_eccentricity.csv") %>%
+#   filter(scene <= 40) %>%
+#   select(-zatt)
 
 # accuracy per tracker
 # scene, tracker, acc, chain
@@ -80,17 +86,17 @@ model_att <- read_csv("../data/exp2/exp2_probes_target_designation_att.csv") %>%
 ```{r results='hide'}
 
 # normalize distance to nearest distractor and distance to tracker centroid
-ecc_data <- prep_ecc_data %>%
-  rename(tttm = tracker_to_tracker_mean) %>%
-  mutate(dist_to_nd = scale(dist_to_nd),
-         log_tttm = log(tttm)) %>%
-  # add epochs
-  group_by(scene) %>%
-  mutate(epoch = dense_rank(frame)) %>% 
-  ungroup()
+# ecc_data <- prep_ecc_data %>%
+#   rename(tttm = tracker_to_tracker_mean) %>%
+#   mutate(dist_to_nd = scale(dist_to_nd),
+#          log_tttm = log(tttm)) %>%
+#   # add epochs
+#   group_by(scene) %>%
+#   mutate(epoch = dense_rank(frame)) %>% 
+#   ungroup()
 
 
-model_smoothing = 18
+model_smoothing = 12
 # add lag and lead att values
 # also add cumulative att
 # and smoothing
@@ -121,13 +127,15 @@ inf_data <- model_att %>%
 
 # sum up the total amount of attention
 # and computed weighted tracker centroids
-tau = -10
+tau = 12
 total_att <- inf_data %>%
   group_by(scene, frame) %>%
   summarise(total_att = sum(att_smoothed),
-            total_exp_att = sum(exp(att_smoothed - tau)),
-            weighted_x = sum(pred_x_mu * exp(att_smoothed - tau) / total_exp_att),
-            weighted_y = sum(pred_y_mu * exp(att_smoothed - tau) / total_exp_att)) %>%
+            geo_x = mean(pred_x_mu),
+            geo_y = mean(pred_y_mu),
+            total_exp_att = sum(exp(att_smoothed / tau)),
+            weighted_x = sum(pred_x_mu * exp(att_smoothed / tau) / total_exp_att),
+            weighted_y = sum(pred_y_mu * exp(att_smoothed / tau) / total_exp_att)) %>%
   ungroup()
 
 # total_att <- inf_data %>%
@@ -139,18 +147,18 @@ total_att <- inf_data %>%
 
 
 # add distance to weighted and unweighted tracker means
-inf_data <- inf_data %>%
+exp_data <- inf_data %>%
     # filter(scene == 4) %>% 
   left_join(total_att, by = c("scene", "frame")) %>%
   mutate(ttwm = sqrt((weighted_x - pred_x_mu)^2 + (weighted_y - pred_y_mu)^2),
+         tttm = sqrt((geo_x - pred_x_mu)^2 + (geo_y - pred_y_mu)^2),
          log_ttwm = log(ttwm),
         ) %>%
   group_by(scene, frame) %>%
   # mutate(ttwm = scale(ttwm)) %>%
   ungroup()
 
-exp_data <- ecc_data %>%
-  left_join(inf_data, by = c("scene", "frame", "tracker"))
+
 ```
 
 ## Subject Data
@@ -173,36 +181,39 @@ with_probes <- subject_data %>%
   mutate(delta_t = response_frame - frame,
          hit = between(delta_t, 0, hit_window),
          fp = between(delta_t, hit_window+1, probe_space)) %>%
-  ungroup()
+  ungroup() %>%
+  filter(hit | fp)
 ```
 
 
 
 
 ```{r}
-hr_by_subj_scene <- with_probes %>%
+hits_by_subj_scene <- with_probes %>%
   group_by(ID, scene, probe) %>%
   summarise(hit = any(hit)) %>%
   group_by(ID, scene) %>%
-  summarise(hr = mean(hit))
+  summarise(hits = sum(hit))
 
 fp_by_subj_scene <- with_probes %>%
   group_by(ID, scene, response_frame) %>%
   summarise(fp = any(fp)) %>%
   group_by(ID, scene) %>%
-  summarise(fpr = mean(fp))
+  summarise(fpr = sum(fp))
 
-probe_by_subj <- hr_by_subj_scene %>%
+nprobes = nrow(probe_timings)
+
+probe_by_subj <- hits_by_subj_scene %>%
   left_join(fp_by_subj_scene) %>%
   group_by(ID) %>%
-  summarise(hr = mean(hr),
-            fp = mean(fpr))
+  summarise(hr = sum(hits) / nprobes,
+            fp = sum(fpr) / nprobes)
 
 td_by_subj_tracker <- subject_data %>%
   pivot_longer(cols = starts_with("td"), 
                names_to = "tracker", 
                values_to = "td") %>%
-  separate(tracker, c("NA", "tracker")) %>%
+  separate(tracker, c(NA, "tracker")) %>%
   mutate(tracker = as.numeric(tracker)) %>%
   group_by(ID, scene, tracker) %>%
   summarise(td = first(td)) 
@@ -227,7 +238,7 @@ good_subjects_data <- subject_performance %>%
   filter(passed) %>%
   select(ID) %>%
   left_join(with_probes, by = "ID") %>%
-  left_join(hr_by_subj_scene) %>%
+  left_join(hits_by_subj_scene) %>%
   left_join(td_by_subj_scene, by = c("ID", "scene")) %>%
   ungroup() 
 # %>%
@@ -252,6 +263,8 @@ correct (4/4) target designation.
 
 
 ```{r}
+n_subjs = sum(subject_performance$passed, na.rm = TRUE)
+
 hr_by_probe <- good_subjects_data %>%
   # sorting out probed tracker
   pivot_longer(cols = starts_with("probe_"), 
@@ -266,20 +279,24 @@ hr_by_probe <- good_subjects_data %>%
             n = n()) %>%
   ungroup() %>%
   group_by(scene, epoch, probe, tracker) %>%
-  summarise(hr = mean(hit),
+  summarise(hr = sum(hit) / n_subjs,
             td = mean(td),
             n = n()) %>%
   ungroup()
 
 ate_by_probe <- hr_by_probe %>%
   mutate(frame = probe) %>%
-  left_join(exp_data, by = c("scene", "epoch", "frame", "tracker")) %>%
+  left_join(exp_data, by = c("scene", "frame", "tracker")) %>%
   group_by(scene) %>%
   mutate(ttwm_rank = rank(ttwm),
          hr.rank = rank(hr)) %>%
   ungroup()
 # %>%
 #   filter(scene != 37, scene != 22)
+
+slim_ate_by_probe <- ate_by_probe %>%
+  select(scene, frame, tracker, probe, epoch, hr, cycles_mu, att_smoothed, ttwm, tttm) %>%
+  filter(scene <= 2)
 
 ```
 
@@ -343,7 +360,7 @@ cum_att <- inf_data %>%
 Focusing on specific scene
 
 ```{r}
-spec_scene = c(13, 16)
+spec_scene = c(1, 2)
 
 ate_by_probe %>%
   filter(scene %in% spec_scene) %>% 
@@ -358,7 +375,7 @@ timing_data <- good_subjects_data %>%
   ungroup() %>%
   filter(scene %in% spec_scene) %>%
   nest_by(ID) %>%
-  mutate(idata = list(filter(inf_data, scene %in% spec_scene)),
+  mutate(idata = list(filter(exp_data, scene %in% spec_scene)),
          full = list(left_join(idata, data, by = c("scene", "frame")))) %>%
   select(-c(data, idata)) %>%
   unnest(cols = full) %>%
@@ -376,32 +393,6 @@ timing_data %>%
   facet_grid(rows = vars(scene))
 ```
 
-```{r}
-
-delay_by_probe <- good_subjects_data %>%
-  # sorting out probed tracker
-  pivot_longer(cols = starts_with("probe_"), 
-               names_to = "probed_tracker_epoch",
-               values_to = "tracker") %>%
-  separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
-  mutate(probed_tracker_epoch = as.numeric(probed_tracker_epoch)) %>%
-  filter(probed_tracker_epoch == epoch, hit) %>%
-  group_by(scene, probe, epoch, probed_tracker_epoch, tracker) %>%
-  summarise(delay.mu = mean(delta_t),
-            n = n(),
-            delay.se = sd(delta_t) / sqrt(n)) %>%
-  ungroup()
-
-delay_ate_by_probe <- delay_by_probe %>%
-  mutate(frame = probe) %>%
-  left_join(exp_data, by = c("scene", "epoch", "frame", "tracker")) %>%
-  group_by(scene) %>%
-  mutate(ttwm_rank = rank(ttwm),
-         delay.rank = rank(delay.mu),
-         delay.conf_high = delay.mu + delay.se,
-         delay.conf_low = delay.mu - delay.se) %>%
-  ungroup()
-```
 
 ```{r}
 ate_by_probe %>%

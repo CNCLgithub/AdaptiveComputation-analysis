@@ -9,3 +9,5 @@ tmp/
 .rstudio
 output/
 data/
+.Rproj.user
+*.pdf
