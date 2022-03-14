@@ -24,10 +24,6 @@ knitr::opts_chunk$set(fig.pos = 'H',
 ```{r , include=FALSE}
 library(tidyverse)
 library(estimatr)
-# library(hexbin)
-# library(ggplot2)
-# library(readr)
-# library(stargazer)
 
 
 th <- theme_minimal()
@@ -37,7 +33,7 @@ theme_set(th)
 ## Load Data
 
 ```{r echo=TRUE, results='hide'}
-subject_data <- read_csv("output/exp1_difficulty_parsed_trials.csv") %>%
+subject_data <- read_csv("../data/exp1/exp1_difficulty_parsed_trials.csv") %>%
   select(-c(WID)) %>%
   replace_na(list(response_frame = Inf)) %>%
   group_by(ID) %>%
@@ -47,7 +43,7 @@ exp_design <- subject_data %>%
   group_by(scene) %>%
   summarise(across(c(vel, n_dist), first))
 
-model_data <- read_csv("data/exp1_difficulty_target_designation_g00_c30_11_30_2021.csv")
+model_data <- read_csv("../data/exp1/exp1_difficulty_target_designation_g00_c30_11_30_2021.csv")
 ```
 
 ```{r, echo=FALSE, results='hide'}
@@ -102,7 +98,9 @@ model_td_compute_by_scene <- model_data %>%
   summarise(across(-chain, list(mu = mean, sd = sd))) %>%
   rename(td_model = td_chain_mu) %>%
   ungroup() %>%
-  mutate(compute = scale(log(cycles_mu + 10)))
+  mutate(compute = scale(log(cycles_mu + 0.1)))
+
+  # mutate(compute = scale(log(cycles_mu + 0.1)))
 ```
 
 ## Psychophysics summary
@@ -161,7 +159,7 @@ model_td_compute_by_scene <- model_data %>%
   summarise(across(-chain, list(mu = mean, sd = sd))) %>%
   rename(td_model = td_chain_mu) %>%
   ungroup() %>%
-  mutate(compute = scale(log(cycles_mu + 10)))
+  mutate(compute = scale(log(cycles_mu + 0.1)))
 
   
 good_full_data <- good_td_by_scene %>%
@@ -217,18 +215,9 @@ good_full_data %>%
   summary()
 
 good_full_data %>%
-  ggplot(aes(x = td_mu, 
-             y = td_sd)) +
+  ggplot(aes(x = td_model, 
+             y = td_mu)) +
   geom_point()
-
-good_full_data %>%
-  ggplot(aes(x=td_mu, y=difficulty_mu)) +
-  geom_point()
-
-
-good_full_data %>%
-  ggplot(aes(x=td_model, y=td_chain_sd)) +
-  geom_point() 
 
 
 ```
@@ -251,8 +240,9 @@ good_full_data %>%
 
 good_full_data %>%
   ggplot(aes(x=compute, y=difficulty_mu)) +
-  geom_point() +
-  geom_smooth(method="lm_robust")
+  geom_point(color = "#5aa67b", size = 3.1) + 
+  geom_smooth(method = "lm", color = "black") +
+  theme_classic() 
 
 ```
 
@@ -355,102 +345,5 @@ good_full_data %>%
   geom_smooth(method="lm_robust")
 ```
 
+## Bootstrapping
 
-## Granularity
-
-Trackers that are dropped more than half the time vs trackers that aren't for human performance
-
-> TODO: obtain dropping statistics. 
-
-(scene 9)
-
-(counting rank order prediction; ie 40 / 65 trials have for multi-res, vs none)
-
-
-# plot td comparison for each tracker
-```{r}
-human_tracker <- good_full_data %>%
-  select(c(scene, contains("td") & contains("mu"), contains("td") & contains("sd"))) %>%
-  select(-c(td_chain_sd, td_mu, td_sd)) %>%
-  pivot_longer(
-    cols = starts_with("td_"),
-    names_to = "tracker",
-    names_prefix = "td_",
-    values_to = "human"
-  ) %>%
-  filter(tracker != "mu") %>%
-  separate(tracker, c("t", "stat")) %>%
-  mutate(tracker = as.numeric(t)) %>%
-  select(-t)
-
-tracker_comparison <- good_full_data %>%
-  select(c(scene, starts_with("tracker_"))) %>%
-  select(c(scene, contains("mu"), contains("sd"))) %>%
-  pivot_longer(
-    cols = starts_with("tracker_"),
-    names_to = "tracker",
-    names_prefix = "tracker_",
-    values_to = "model"
-  ) %>%
-  separate(tracker, c("t", "stat")) %>%
-  mutate(tracker = as.numeric(t)) %>%
-  select(-t) %>%
-  left_join(human_tracker) %>%
-  pivot_longer(
-    cols = c(human, model),
-    names_to = c("organism", NA),
-    names_sep = "_",
-    values_to = "val"
-  ) %>%   
-  arrange(scene, tracker) %>%
-  group_by(scene, organism) %>%
-  mutate(rank = dense_rank(val))
-
-tracker_comparison %>%
-  select(-rank) %>%
-  filter(stat == "mu") %>%
-  pivot_wider(
-    names_from = organism,
-    values_from = val
-  ) %>%
-  with(lm_robust(human ~ model)) %>%
-  summary
-
-tracker_comparison %>%
-  select(-rank) %>%  
-  filter(stat == "mu") %>%
-  pivot_wider(
-    names_from = organism,
-    values_from = val
-  ) %>%
-  ggplot(aes(x=model, y=human, color = factor(tracker))) +
-  geom_point()
-
-tracker_comparison %>%
-  select(-rank) %>%  
-  pivot_wider(
-    names_from = stat,
-    values_from = val
-  ) %>%
-  ggplot(aes(x=mu, y=sd, color = factor(scene))) +
-  ylim(-0.1, 0.6) +
-  geom_density_2d_filled() + 
-  geom_point() +
-  facet_grid(rows = "organism") + 
-  theme(legend.position = "none")
-
-good_full_data %>%
-  select(scene, vel, n_dist) %>%
-  left_join(tracker_comparison) %>%
-  select(-rank) %>%  
-  pivot_wider(
-    names_from = stat,
-    values_from = val
-  ) %>%
-  ggplot(aes(x=mu, y=sd, )) +
-  ylim(-0.1, 0.6) +
-  # geom_density_2d_filled() + 
-  geom_point(aes(color = vel)) +
-  facet_grid(organism ~ n_dist)
-
-```

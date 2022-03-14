@@ -133,21 +133,21 @@ def main():
         formatter_class = argparse.ArgumentDefaultsHelpFormatter)
    
     parser.add_argument("--database", type = str, help = "Path to participant database",
-                        default = 'data/exp1_difficulty.db')
+                        default = 'data/exp1/exp1_difficulty.db')
     parser.add_argument("--dataset", type = str, help = "Path to trial dataset",
-                        default = 'data/exp1_difficulty_dataset.json')
+                        default = 'data/exp1/exp1_difficulty_dataset.json')
     parser.add_argument("--table-name", type = str, default = "exp1_difficulty",
                         help = 'Table name')
-    parser.add_argument("--exp-flag", type = str, nargs ='+', default = ["1.0"],
+    parser.add_argument("--exp-flag", type = str, nargs ='+', default = ["1.6"],
                         help = 'Experiment version flag')
     parser.add_argument("--mode", type = str, default = "debug",
                         choices = ['debug', 'sandbox', 'live'],
                         help = 'Experiment mode')
-    parser.add_argument("--trialsbyp", type = int, default = 25,
+    parser.add_argument("--trialsbyp", type = int, default = 65,
                         help = 'Number of trials expected per subject')
-    parser.add_argument("--trialdata", type = str, default = 'output/exp1_difficulty_parsed_trials.csv',
+    parser.add_argument("--trialdata", type = str, default = 'data/exp1/exp1_difficulty_parsed_trials.csv',
                         help = 'Filename to dump parsed trial data')
-    parser.add_argument("--questiondata", type = str, default = 'output/exp1_difficulty_parsed_questions.csv',
+    parser.add_argument("--questiondata", type = str, default = 'data/exp1/exp1_difficulty_parsed_questions.csv',
                         help = 'Filename to dump parsed trial data questions')
 
     args = parser.parse_args()

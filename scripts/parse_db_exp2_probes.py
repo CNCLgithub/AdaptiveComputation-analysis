@@ -187,7 +187,8 @@ def main():
 
     trs["ID"] = trs.WID.apply(lambda x: wid_translate[x])
 
-    trs.to_csv(args.trialdata, index=False)
+    trial_path = 'data/exp2/parsed_trials_{0!s}.csv'.format(args.table_name)
+    trs.to_csv(trial_path, index=False)
 
     cl_qs = qs[qs.WID.isin(good_wids)].copy()
     cl_qs["ID"] = cl_qs.WID.apply(lambda x: wid_translate[x])

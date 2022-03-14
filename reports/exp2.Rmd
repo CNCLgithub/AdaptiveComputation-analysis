@@ -90,7 +90,7 @@ ecc_data <- prep_ecc_data %>%
   ungroup()
 
 
-model_smoothing = 18
+model_smoothing = 6.0
 # add lag and lead att values
 # also add cumulative att
 # and smoothing
@@ -121,13 +121,13 @@ inf_data <- model_att %>%
 
 # sum up the total amount of attention
 # and computed weighted tracker centroids
-tau = -10
-total_att <- inf_data %>%
+tau = 17.5
+centroids <- inf_data %>%
   group_by(scene, frame) %>%
   summarise(total_att = sum(att_smoothed),
-            total_exp_att = sum(exp(att_smoothed - tau)),
-            weighted_x = sum(pred_x_mu * exp(att_smoothed - tau) / total_exp_att),
-            weighted_y = sum(pred_y_mu * exp(att_smoothed - tau) / total_exp_att)) %>%
+            total_exp_att = sum(exp(att_smoothed / tau)),
+            weighted_x = sum(pred_x_mu * exp(att_smoothed / tau) / total_exp_att),
+            weighted_y = sum(pred_y_mu * exp(att_smoothed / tau) / total_exp_att)) %>%
   ungroup()
 
 # total_att <- inf_data %>%
@@ -137,20 +137,54 @@ total_att <- inf_data %>%
 #             weighted_y = sum(pred_y_mu * (att_smoothed) / total_att)) %>%
 #   ungroup()
 
+# pos_matf <- function(data) {
+#   m <- data %>% 
+#     select(c(pred_x_mu, pred_y_mu)) %>%
+#     as.matrix()
+#   return (m)
+# }
+# 
+# l2_wvecf <- function(mv, x, y, ws) {
+#   m = mv[[1]]
+#   ds <- (m[,1]-x)^2 + (m[,2]-y)^2
+#   l2 <- sum(sapply(ds, sqrt) * ws[[1]]) / length(ws[[1]])
+#   return (l2)
+# }
+# 
+# l2distances <- inf_data %>%
+#   left_join(centroids, by = c("scene", "frame")) %>%
+#   # filter(frame == 1, scene == 1) %>%
+#   select(c(scene, frame, tracker, att_smoothed, pred_x_mu, pred_y_mu, total_exp_att)) %>%
+#   group_by(scene, frame) %>%
+#   summarise(pos_mat = list(cbind(as.array(pred_x_mu), as.array(pred_y_mu))),
+#             ws_vec = list(exp(att_smoothed / tau) / total_exp_att)) %>%
+#   ungroup() %>%
+#   left_join(inf_data, by = c("scene", "frame")) %>%
+#   left_join(centroids, by = c("scene", "frame")) %>%
+#   mutate(importance = exp(att_smoothed / tau) / total_exp_att) %>%
+#   select(c(scene, frame, tracker, importance, ws_vec, pos_mat, pred_x_mu, pred_y_mu)) %>%
+#   group_by(scene, frame, tracker) %>%
+#   mutate(att_d = l2_wvecf(pos_mat, pred_x_mu, pred_y_mu, ws_vec)) %>%
+#   select(c(scene, frame, tracker, importance, att_d)) %>%
+#   ungroup()
+
 
 # add distance to weighted and unweighted tracker means
 inf_data <- inf_data %>%
-    # filter(scene == 4) %>% 
-  left_join(total_att, by = c("scene", "frame")) %>%
+  left_join(centroids, by = c("scene", "frame")) %>%
+  # left_join(l2distances, by = c("scene", "frame", "tracker")) %>%
   mutate(ttwm = sqrt((weighted_x - pred_x_mu)^2 + (weighted_y - pred_y_mu)^2),
-         log_ttwm = log(ttwm),
-        ) %>%
-  group_by(scene, frame) %>%
-  # mutate(ttwm = scale(ttwm)) %>%
+         log_ttwm = log(ttwm)) %>%
   ungroup()
 
+ttwm_stat <- inf_data %>%
+  group_by(scene, frame) %>%
+  summarise(ttwm_mu = mean(ttwm),
+            ttwm_sd = sd(ttwm))
+
 exp_data <- ecc_data %>%
-  left_join(inf_data, by = c("scene", "frame", "tracker"))
+  left_join(inf_data, by = c("scene", "frame", "tracker")) %>%
+  left_join(ttwm_stat, by = c("scene", "frame"))
 ```
 
 ## Subject Data
@@ -159,12 +193,12 @@ screen bad subjects
 
 
 ```{r echo=TRUE, results='hide'}
-subject_data <- read_csv("../data/exp2/parsed_trials.csv") %>%
+subject_data <- read_csv("../data/exp2/parsed_trials_exp2_random_probes.csv") %>%
   select(-c(WID)) %>%
   replace_na(list(response_frame = Inf))
 
-hit_window = 36
-probe_space = 60
+hit_window = 36 # subjects hit if response 1.5s after probe onset
+probe_space = 60 # 2.5 seconds between probes
 with_probes <- subject_data %>%
   nest_by(ID) %>%
   mutate(full = list(right_join(data, probe_timings, by = "scene"))) %>%
@@ -233,6 +267,7 @@ good_subjects_data <- subject_performance %>%
 # %>%
 # filter(td == 1)
 
+n_passed = sum(subject_performance$passed)
 
 ```
 
@@ -260,14 +295,12 @@ hr_by_probe <- good_subjects_data %>%
   separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
   mutate(probed_tracker_epoch = as.numeric(probed_tracker_epoch)) %>%
   group_by(ID, scene, probe, epoch, probed_tracker_epoch, tracker) %>%
-  filter(probed_tracker_epoch == epoch) %>%
-  summarise(hit = any(hit),
-            td = mean(td),
-            n = n()) %>%
+  filter(probed_tracker_epoch == epoch, hit | fp) %>%
   ungroup() %>%
   group_by(scene, epoch, probe, tracker) %>%
-  summarise(hr = mean(hit),
+  summarise(hr = sum(hit) / n_passed,
             td = mean(td),
+            rt = mean(delta_t),
             n = n()) %>%
   ungroup()
 
@@ -376,32 +409,6 @@ timing_data %>%
   facet_grid(rows = vars(scene))
 ```
 
-```{r}
-
-delay_by_probe <- good_subjects_data %>%
-  # sorting out probed tracker
-  pivot_longer(cols = starts_with("probe_"), 
-               names_to = "probed_tracker_epoch",
-               values_to = "tracker") %>%
-  separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
-  mutate(probed_tracker_epoch = as.numeric(probed_tracker_epoch)) %>%
-  filter(probed_tracker_epoch == epoch, hit) %>%
-  group_by(scene, probe, epoch, probed_tracker_epoch, tracker) %>%
-  summarise(delay.mu = mean(delta_t),
-            n = n(),
-            delay.se = sd(delta_t) / sqrt(n)) %>%
-  ungroup()
-
-delay_ate_by_probe <- delay_by_probe %>%
-  mutate(frame = probe) %>%
-  left_join(exp_data, by = c("scene", "epoch", "frame", "tracker")) %>%
-  group_by(scene) %>%
-  mutate(ttwm_rank = rank(ttwm),
-         delay.rank = rank(delay.mu),
-         delay.conf_high = delay.mu + delay.se,
-         delay.conf_low = delay.mu - delay.se) %>%
-  ungroup()
-```
 
 ```{r}
 ate_by_probe %>%
@@ -415,7 +422,6 @@ subject_performance %>%
   ggplot(aes(x = factor(ID), y = hr - fp)) +
   geom_col()
 ```
-
 
 
 ## Effect of weighted tracker centroid on hit rate
@@ -433,27 +439,48 @@ ate_by_probe %>%
   ggplot(aes(x = tttm, y = hr)) +
   geom_point(aes(color = high_att))
 
+# figure 3C
+ate_by_probe %>%
+  ggplot(aes(x = ttwm, y = hr, color = high_att)) +
+  geom_point(size = 3.1) +
+  # geom_smooth(method = "lm", color = "black") +
+  theme_classic() 
 
+
+# figure 3C
 ate_by_probe %>%
   ggplot(aes(x = ttwm, y = hr)) +
-  geom_point(aes(color = high_att))
+  geom_point(color = "#5aa67b", size = 3.1) + 
+  geom_smooth(method = "lm", color = "black") +
+  theme_classic() 
+
+
+ate_by_probe %>%
+  ggplot(aes(x = ttwm_mu, y = hr)) +
+  geom_point(color = "#5aa67b", size = 3.1) + 
+  geom_smooth(method = "lm", color = "black") +
+  theme_classic() 
 
 wtm_fit <- ate_by_probe %>%
-  with(lm_robust(hr ~ ttwm,))
+  with(lm(hr ~ ttwm + ttwm_mu + ttwm_mu * ttwm))
+wtm_fit %>%
+  summary()
+
+wtm_fit <- ate_by_probe %>%
+  with(lm(hr ~ ttwm,))
 wtm_fit %>%
   summary()
 
 ttm_fit <- ate_by_probe %>%
-  with(lm_robust(hr ~ tttm))
+  with(lm(hr ~ tttm))
 ttm_fit %>%
   summary()
 
 # for effect size + conf interval
-ate_by_probe %>%
-  with(lm(hr ~ ttwm + tttm)) %>%
-  summary()
+full_fit <- ate_by_probe %>%
+  with(lm(hr ~ ttwm + tttm))
 
-
+anova(wtm_fit, full_fit)
 
 ```
 
@@ -502,15 +529,18 @@ ate_by_probe <- ate_by_probe %>%
   mutate(res_res_hr = res_hr - pred_res_hr)
 
 ate_by_probe %>%
-  top_n(5, abs(res_res_hr))
+  top_n(5, abs(res_res_hr)) %>%
+  select(c(scene, probe, frame, tracker, hr, ttwm))
 ate_by_probe %>%
   top_n(-5, abs(res_res_hr))
 
+# Fig 3C
 ate_by_probe %>%
   ggplot(aes(x = res_ttwm, y = res_hr)) +
-  geom_point(aes(color = high_att)) + 
-  geom_smooth(method = "lm")
-
+  geom_point(color = "#5aa67b", size = 3.1) + 
+  geom_smooth(method = "lm", color = "black") +
+  theme_classic()
+  
 model_att %>%
   filter(scene == 4)
 

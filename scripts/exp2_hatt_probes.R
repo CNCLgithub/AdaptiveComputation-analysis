@@ -14,7 +14,7 @@ theme_set(th)
 # scene, frame, tracker, cycles, chain
 model_att <- read_csv("data/exp2/exp2_probes_target_designation_att.csv") 
 
-model_smoothing = 12
+model_smoothing = 6
 
 exp_summary <- model_att %>%
   group_by(scene, frame, tracker) %>%
@@ -37,12 +37,16 @@ exp_summary <- model_att %>%
 
 
 # sum up the total amount of attention
+tau = 15
 total_att <- exp_summary %>%
   group_by(scene, frame) %>%
   summarise(total_att = sum(exp(att_smoothed)),
-            cycles_sd = sd(att_smoothed)) %>%
+            geo_x = mean(pred_x_mu),
+            geo_y = mean(pred_y_mu),
+            total_exp_att = sum(exp(att_smoothed / tau)),
+            weighted_x = sum(pred_x_mu * exp(att_smoothed / tau) / total_exp_att),
+            weighted_y = sum(pred_y_mu * exp(att_smoothed / tau) / total_exp_att)) %>%
   ungroup()
-
 
 
 # add lag and lead att values
@@ -52,10 +56,28 @@ full_data <- exp_summary %>%
   group_by(scene, tracker) %>%
   mutate(across(contains("smoothed"), list(lag10 = ~lag(.x, 10))),
          across(!contains("lag")  & contains("smoothed"), list(lead10 = ~lead(.x, 10))),
-         cum_att = cumsum(att_smoothed),
-         cum_zatt = cumsum(zatt)/frame) %>%
+         ttwm = sqrt((weighted_x - pred_x_mu)^2 + (weighted_y - pred_y_mu)^2),
+         tttm = sqrt((geo_x - pred_x_mu)^2 + (geo_y - pred_y_mu)^2)) %>%
   ungroup()
 
+full_data %>%
+  filter(scene %in% c(1,2,3,4,5)) %>%
+  ggplot(aes(x = frame, y = ttwm)) +
+  scale_color_manual(values = c("#A3A500","#00BF7D","#00B0F6","#E76BF3")) +
+  geom_line(aes(color = factor(tracker)), size = 1.5) +
+  # geom_point(aes(y = if_else(peak, att_smoothed, NaN))) +
+  facet_grid(rows = vars(scene)) + 
+  ggtitle("Example of peaks on a scene")
+
+
+full_data %>%
+  filter(scene %in% c(1,2)) %>%
+  ggplot(aes(x = frame, y = abs(ttwm - tttm))) +
+  scale_color_manual(values = c("#A3A500","#00BF7D","#00B0F6","#E76BF3")) +
+  geom_line(aes(color = factor(tracker)), size = 1.5) +
+  # geom_point(aes(y = if_else(peak, att_smoothed, NaN))) +
+  facet_grid(rows = vars(scene)) + 
+  ggtitle("Example of peaks on a scene")
 
 probe_limit = 48
 window_size = 60
