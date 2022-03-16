@@ -26,9 +26,9 @@ library(tidyverse)
 library(estimatr)
 library(ggplot2)
 library(readr)
+library(boot)
 
-
-th <- theme_minimal()
+th <- theme_classic()
 theme_set(th)
 ```
 
@@ -594,6 +594,169 @@ ate_by_probe %>%
 
 
 ```
+
+## Bootstrapping
+
+### First order effects
+
+```{r}
+set.seed(0) # TODO: Should we set this seed?
+
+subj_data_nested <- good_subjects_data %>%
+  ungroup() %>%
+  nest_by(ID)
+
+rsq_function <- function(formula, data, indices) {
+  d <- data[indices,] #allows boot to select sample of subjects
+  # average over subject points
+  full_d <- d %>% 
+    unnest(cols = c(ID, data)) %>%
+    # sorting out probed tracker
+    pivot_longer(cols = starts_with("probe_"), 
+                 names_to = "probed_tracker_epoch",
+                 values_to = "tracker") %>%
+    separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
+    mutate(probed_tracker_epoch = as.numeric(probed_tracker_epoch)) %>%
+    group_by(ID, scene, probe, epoch, probed_tracker_epoch, tracker) %>%
+    filter(probed_tracker_epoch == epoch, hit | fp) %>%
+    ungroup() %>%
+    group_by(scene, epoch, probe, tracker) %>%
+    summarise(hr = sum(hit) / n_passed,
+              td = mean(td),
+              rt = mean(delta_t),
+              .groups = "keep",) %>%
+    ungroup %>%
+    mutate(frame = probe) %>%
+    left_join(exp_data, by = c("scene", "epoch", "frame", "tracker"))
+    
+  fit <- lm(formula, data = full_d)
+  return(summary(fit)$r.square) #return R-squared of model
+}
+```
+
+`hr ~ AC`
+
+
+```{r}
+reps <- boot(data=subj_data_nested, statistic=rsq_function, R=1000, formula=hr ~ ttwm,
+             parallel = "multicore")
+#view results of boostrapping
+reps
+plot(reps)
+#calculate adjusted bootstrap percentile (BCa) interval
+cis_hr_ac <- boot.ci(reps, type="bca")
+cis_hr_ac
+```
+
+`hr ~ GC`
+
+
+```{r}
+reps <- boot(data=subj_data_nested, statistic=rsq_function, R=1000, formula=hr ~ tttm,
+              ncpus = 4,  parallel = "multicore")
+#view results of boostrapping
+reps
+plot(reps)
+#calculate adjusted bootstrap percentile (BCa) interval
+cis_hr_gc <- boot.ci(reps, type="bca")
+cis_hr_gc
+```
+
+
+
+### Partial effects
+
+```{r}
+set.seed(0) # TODO: Should we set this seed?
+
+rsq_function <- function(first, second, data, indices) {
+  d <- data[indices,] #allows boot to select sample of subjects
+  # average over subject points
+  full_d <- d %>% 
+    unnest(cols = c(ID, data)) %>%
+    # sorting out probed tracker
+    pivot_longer(cols = starts_with("probe_"), 
+                 names_to = "probed_tracker_epoch",
+                 values_to = "tracker") %>%
+    separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
+    mutate(probed_tracker_epoch = as.numeric(probed_tracker_epoch)) %>%
+    group_by(ID, scene, probe, epoch, probed_tracker_epoch, tracker) %>%
+    filter(probed_tracker_epoch == epoch, hit | fp) %>%
+    ungroup() %>%
+    group_by(scene, epoch, probe, tracker) %>%
+    summarise(hr = sum(hit) / n_passed,
+              td = mean(td),
+              rt = mean(delta_t),
+              .groups = "keep",) %>%
+    ungroup %>%
+    mutate(frame = probe) %>%
+    left_join(exp_data, by = c("scene", "epoch", "frame", "tracker"))
+  # partial regressions
+  first_ind <- lm(as.formula(paste(first, " ~ ", second)),
+                  data = full_d)
+  first_dep <- lm(as.formula(paste("hr ~ ", second)),
+                  data = full_d)
+  fit <- lm(as.formula(paste("y ~ x")),
+            data = data.frame(y = first_dep$residuals,
+                              x = first_ind$residuals))
+  return(summary(fit)$r.square) #return R-squared of model
+}
+```
+
+`hr ~ AC` Residualized
+
+```{r}
+reps <- boot(data=subj_data_nested, statistic=rsq_function, R=1000, first = "ttwm", second = "tttm",
+              ncpus = 4,  parallel = "multicore")
+#view results of boostrapping
+reps
+plot(reps)
+#calculate adjusted bootstrap percentile (BCa) interval
+cis_hr_ac_res <- boot.ci(reps, type="bca")
+cis_hr_ac_res
+```
+`hr ~ GC` Residualized
+
+```{r}
+reps <- boot(data=subj_data_nested, statistic=rsq_function, R=1000, first = "tttm", second = "ttwm",
+              ncpus = 4,  parallel = "multicore")
+#view results of boostrapping
+reps
+plot(reps)
+#calculate adjusted bootstrap percentile (BCa) interval
+cis_hr_gc_res <- boot.ci(reps, type="bca")
+cis_hr_gc_res
+```
+
+
+### Fig 3E
+
+```{r}
+fig_3E <- function() {
+  data.frame(model = c("Attention", "Geometric"),
+           conf.low = c(cis_hr_ac_res$bca[4], cis_hr_gc_res$bca[4]),
+           conf.high = c(cis_hr_ac_res$bca[5], cis_hr_gc_res$bca[5])) %>%
+  mutate(r2 = 0.5 * (conf.low + conf.high)) %>%
+  ggplot(aes(x = model, y = r2, fill = model)) + 
+  geom_col(width = 0.5) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.1, size = 0.7) + 
+  theme(legend.position = "none",
+        axis.ticks = element_blank(),
+        axis.title = element_blank(),
+        # axis.text = element_blank(),
+        aspect.ratio = 1
+        )
+}
+withr::with_options(
+  list(ggplot2.discrete.fill = c("#5aa67b", "#6d9eeb")),
+  print(fig_3E())
+)
+
+```
+
+
+# Scratch 
+
 
 ### high att trials
 

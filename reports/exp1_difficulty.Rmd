@@ -22,11 +22,16 @@ knitr::opts_chunk$set(fig.pos = 'H',
 
 ```
 ```{r , include=FALSE}
+
+# install.packages("tidyverse")
+# install.packages("estimatr")
+# install.packages("boot")
 library(tidyverse)
 library(estimatr)
+library(boot)
 
 
-th <- theme_minimal()
+th <- theme_classic()
 theme_set(th)
 ```
 
@@ -60,10 +65,11 @@ td_by_subj <- td_by_subj_tracker %>%
             passed = td_acc_mu > 0.50 + 3 * td_acc_se) # chance performance lower than 0.5?
 td_by_subj
 
-
-good_td_by_subj_tracker <- td_by_subj %>%
+passed_id <- td_by_subj %>%
   filter(passed) %>%
-  select(ID) %>%
+  select(ID)
+
+good_td_by_subj_tracker <- passed_id %>%
   left_join(td_by_subj_tracker)
 
 n_passed = sum(td_by_subj$passed)
@@ -77,17 +83,20 @@ good_td_by_scene_tracker <- good_td_by_subj_tracker %>%
     across(c(starts_with("td"), difficulty), list(mu = mean, sd = sd)),
     )
 
-good_td_by_scene <- good_td_by_subj_tracker %>%
-  select(scene, contains("td")) %>%
+
+# separated for bootstrapping analysis later
+good_subj_point_long <- good_td_by_subj_tracker %>%
+  select(scene, contains("td_")) %>%
   pivot_longer(-scene,
                names_to = c(NA, "tracker"),
                names_sep = "_",
-               values_to = "td"
-               ) %>%
+               values_to = "td")
+
+good_td_by_scene <- good_subj_point_long %>%
   group_by(scene) %>%
   summarise(across(td, list(mu = mean, sd = sd))) %>%
-  left_join(good_td_by_scene_tracker) %>%
-  left_join(exp_design)
+  left_join(good_td_by_scene_tracker, by="scene") %>%
+  left_join(exp_design, by="scene")
 
 
 model_td_compute_by_scene <- model_data %>%
@@ -345,5 +354,244 @@ good_full_data %>%
   geom_smooth(method="lm_robust")
 ```
 
-## Bootstrapping
+# Bootstrapping
 
+Using this [guide](https://www.statology.org/bootstrapping-in-r/)
+
+first define the r2 func
+
+
+## Trial level bootstrapping
+```{r}
+set.seed(0) # TODO: Should we set this seed?
+
+rsq_function <- function(formula, data, indices) {
+  d <- data[indices,] #allows boot to select sample
+  fit <- lm(formula, data=d) #fit regression model
+  return(summary(fit)$r.square) #return R-squared of model
+}
+
+reps <- boot(data=good_full_data, statistic=rsq_function, R=2000, formula=difficulty_mu ~ compute)
+
+#view results of boostrapping
+reps
+
+plot(reps)
+
+#calculate adjusted bootstrap percentile (BCa) interval
+boot.ci(reps, type="bca")
+
+```
+
+## Subject level bootstrapping
+```{r}
+set.seed(0) # TODO: Should we set this seed?
+
+subj_data_nested <- passed_id %>%
+  left_join(td_by_subj_tracker, by = "ID") %>%
+  ungroup() %>%
+  nest_by(ID)
+
+ate_function <- function(d) {
+  ate <- d %>% 
+    unnest(cols = c(ID, data)) %>%
+    group_by(scene) %>% # average across subjects
+    summarise(
+      n = n(),
+      across(c(td, difficulty), list(mu = mean, sd = sd)),
+      .groups = "keep",
+      ) %>%
+    left_join(exp_design, by = "scene") %>%
+    left_join(model_td_compute_by_scene, by = "scene") %>%
+    ungroup
+  return (ate)
+}
+
+rsq_function <- function(formula, data, indices) {
+  d <- data[indices,] #allows boot to select sample of subjects
+  # average over subject points
+  full_d <- d %>% 
+    ate_function
+  fit <- lm(formula, data = full_d)
+  return(summary(fit)$r.square) #return R-squared of model
+}
+```
+
+
+`Effort ~ Compute`
+
+```{r}
+reps <- boot(data=subj_data_nested, statistic=rsq_function, R=2000, formula=difficulty_mu ~ compute)
+#view results of boostrapping
+reps
+plot(reps)
+#calculate adjusted bootstrap percentile (BCa) interval
+cis_effort <- boot.ci(reps, type="bca")
+```
+
+`Effort ~ Model Acc`
+
+```{r}
+reps <- boot(data=subj_data_nested, statistic=rsq_function, R=2000, formula=difficulty_mu ~ td_model)
+#view results of boostrapping
+reps
+plot(reps)
+#calculate adjusted bootstrap percentile (BCa) interval
+cis_effort_td_model <- boot.ci(reps, type="bca")
+```
+`Effort ~ Human Acc`
+
+```{r}
+reps <- boot(data=subj_data_nested, statistic=rsq_function, R=2000, formula=difficulty_mu ~ td_mu)
+#view results of boostrapping
+reps
+plot(reps)
+#calculate adjusted bootstrap percentile (BCa) interval
+cis_effort_td_mu <- boot.ci(reps, type = "bca")
+```
+
+`Human Acc ~ Model Acc.` (SI)
+
+```{r}
+reps <- boot(data=subj_data_nested, statistic=rsq_function, R=1000, formula=td_mu ~ td_model)
+#view results of boostrapping
+reps
+plot(reps)
+#calculate adjusted bootstrap percentile (BCa) interval
+cis_human_acc <- boot.ci(reps, type="bca")
+```
+
+Partial regression 
+
+```{r}
+rsq_function <- function(first, second, data, indices) {
+  d <- data[indices,] #allows boot to select sample of subjects
+  # average over subject points
+  full_d <- d %>% 
+    ate_function
+  # partial regressions
+  first_ind <- lm(as.formula(paste(first, " ~ ", second)),
+                  data = full_d)
+  first_dep <- lm(as.formula(paste("difficulty_mu ~ ", second)),
+                  data = full_d)
+  fit <- lm(as.formula(paste("y ~ x")),
+            data = data.frame(y = first_dep$residuals,
+                              x = first_ind$residuals))
+  return(summary(fit)$r.square) #return R-squared of model
+}
+
+```
+```{r}
+reps <- boot(data=subj_data_nested, statistic=rsq_function, R=1000, first = "compute", second = "td_mu")
+#view results of boostrapping
+reps
+plot(reps)
+#calculate adjusted bootstrap percentile (BCa) interval
+cis_effort_compute_sans_human_acc <- boot.ci(reps, type="bca")
+```
+
+```{r}
+reps <- boot(data=subj_data_nested, statistic=rsq_function, R=1000, first = "compute", second = "td_model")
+#view results of boostrapping
+reps
+plot(reps)
+#calculate adjusted bootstrap percentile (BCa) interval
+cis_effort_compute_sans_model_acc <- boot.ci(reps, type="bca")
+```
+
+Split-half correlation
+
+
+```{r}
+rsq_function <- function(data, indices) {
+  
+  splits <- split(indices, 
+                  cut(seq_along(indices),  
+                      2,
+                      labels = FALSE))
+  a <- data[unlist(splits[1]),] %>%
+    ate_function %>%
+    select(scene, difficulty_mu) %>%
+    rename(a = difficulty_mu)
+  
+  b <-data[unlist(splits[2]),] %>%
+    ate_function %>%
+    select(scene, difficulty_mu) %>%
+    rename(b = difficulty_mu)
+  
+  sample <- a %>%
+    left_join(b, by = "scene")
+  
+  # sample_ate %>% head %>% print
+  
+  fit <- lm(b ~ a, data = sample)
+  return(summary(fit)$r.square) #return R-squared of model
+}
+
+reps <- boot(data=subj_data_nested, statistic=rsq_function, R=1000)
+#view results of boostrapping
+reps
+plot(reps)
+#calculate adjusted bootstrap percentile (BCa) interval
+cis_split_half <- boot.ci(reps, type="bca")
+```
+
+
+## Figure 4D
+
+
+First order effects
+
+```{r}
+
+fig_4D_df <- data.frame(model = c("1", "2", "3"),
+                        conf.low = c(cis_effort$bca[4], 
+                                     cis_effort_td_model$bca[4], 
+                                     cis_effort_td_mu$bca[4]),
+                        conf.high = c(cis_effort$bca[5], 
+                                      cis_effort_td_model$bca[5], 
+                                      cis_effort_td_mu$bca[5])) %>%
+  mutate(r2 = 0.5 * (conf.low + conf.high))
+fig_4D <- function(data) {
+  data %>%
+    ggplot(aes(x = model, y = r2, fill = model)) + 
+    # geom_hline(yintercept = cis_split_half$bca[5],
+    #            linetype = "dashed",
+    #            size = 1.0) +
+    geom_col(width = 0.6) +
+    geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.1, size = 0.7) +
+
+    theme(legend.position = "none",
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          # axis.text = element_blank(),
+          aspect.ratio = 1
+          )
+}
+okabe <- c("#5aa67b", "#CC79A7", "#56B4E9", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+withr::with_options(
+  list(ggplot2.discrete.fill = okabe),
+  print(fig_4D(fig_4D_df))
+)
+
+```
+
+Partial regressions
+
+
+
+```{r}
+fig_4D_df <- data.frame(model = c("1", "2"),
+                        conf.low = c(cis_effort_compute_sans_model_acc$bca[4],
+                                     cis_effort_compute_sans_human_acc$bca[4]),
+                        conf.high = c(cis_effort_compute_sans_model_acc$bca[5],
+                                     cis_effort_compute_sans_human_acc$bca[5])) %>%
+  mutate(r2 = 0.5 * (conf.low + conf.high))
+
+okabe <- c("#5aa6a1", "#5fa65a", "#56B4E9", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+withr::with_options(
+  list(ggplot2.discrete.fill = okabe),
+  print(fig_4D(fig_4D_df))
+)
+
+```
