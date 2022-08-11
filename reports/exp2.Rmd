@@ -23,7 +23,6 @@ knitr::opts_chunk$set(fig.pos = 'H',
 ```
 ```{r , include=FALSE}
 library(tidyverse)
-library(estimatr)
 library(ggplot2)
 library(readr)
 library(boot)
@@ -48,8 +47,8 @@ probe_timings <- read_csv("../data/exp2/exp2_probe_map_random.csv") %>%
   filter(scene <= 40) %>%
   group_by(scene, frame) %>%
   summarise() %>%
-  ungroup() %>%
-  mutate(probe = frame) %>%
+ungroup() %>%
+mutate(probe = frame) %>%
   group_by(scene) %>%
   mutate(epoch = dense_rank(frame)) %>%
   ungroup()
@@ -72,8 +71,7 @@ model_att <- read_csv("../data/exp2/exp2_probes_target_designation_att.csv") %>%
   summarise(across(-chain, list(mu = mean, sd = sd))) %>%
   ungroup() %>%
   mutate(cycles_mu = cycles_mu + 0.1, # padding to allow for log
-         zatt = scale(attention_mu),
-         log_att = log(cycles_mu))
+         log_cycles = log(cycles_mu))
 
 ```
 
@@ -90,84 +88,31 @@ ecc_data <- prep_ecc_data %>%
   ungroup()
 
 
-model_smoothing = 6.0
+model_smoothing = 12.0
 # add lag and lead att values
 # also add cumulative att
 # and smoothing
 inf_data <- model_att %>%
   group_by(scene, tracker) %>%
-  mutate(across(contains("att"), list(lag = ~lag(.x, 10))),
-         across(!contains("lag")  & contains("att"), list(lead = ~lead(.x, 10))),
-         cum_att = cumsum(cycles_mu),
-         cum_zatt = cumsum(zatt)/frame,
-         zatt_and_lag = zatt + zatt_lag) %>%
-  # add attention quartiles 
-  mutate(att_pct = pnorm(zatt),
-         att_scored_qtl = case_when(between(att_pct, 0, 0.25) ~ 1,
-                                    between(att_pct, 0.25, 0.50) ~ 2,
-                                    between(att_pct, 0.50, 0.75) ~ 3,
-                                    TRUE ~ 4)) %>%
-  mutate(att_scored_qtl = factor(att_scored_qtl, levels = c(1,2,3,4)),
-         high_att = att_scored_qtl == 4) %>%
-  # add smoothing
+   # add smoothing
   nest_by() %>%
   mutate(att_xy = list(with(data,
-                          ksmooth(frame, attention_mu, kernel = "normal", 
+                          ksmooth(frame, importance_mu, kernel = "normal", 
                                   bandwidth = model_smoothing)))) %>%
-  mutate(att_smoothed = list(att_xy$y)) %>%
-  unnest(cols = c(data, att_smoothed)) %>%
+  mutate(importance_smoothed = list(att_xy$y)) %>%
+  unnest(cols = c(data, importance_smoothed)) %>%
   dplyr::select(-c(att_xy)) %>%
   ungroup()
 
 # sum up the total amount of attention
 # and computed weighted tracker centroids
-tau = 17.5
+# tau = 17.5
 centroids <- inf_data %>%
   group_by(scene, frame) %>%
-  summarise(total_att = sum(att_smoothed),
-            total_exp_att = sum(exp(att_smoothed / tau)),
-            weighted_x = sum(pred_x_mu * exp(att_smoothed / tau) / total_exp_att),
-            weighted_y = sum(pred_y_mu * exp(att_smoothed / tau) / total_exp_att)) %>%
+  summarise(total_cycles = sum(cycles_mu),
+            weighted_x = sum(pred_x_mu * importance_smoothed),
+            weighted_y = sum(pred_y_mu * importance_smoothed)) %>%
   ungroup()
-
-# total_att <- inf_data %>%
-#   group_by(scene, frame) %>%
-#   summarise(total_att = sum(att_smoothed),
-#             weighted_x = sum(pred_x_mu * (att_smoothed) / total_att),
-#             weighted_y = sum(pred_y_mu * (att_smoothed) / total_att)) %>%
-#   ungroup()
-
-# pos_matf <- function(data) {
-#   m <- data %>% 
-#     select(c(pred_x_mu, pred_y_mu)) %>%
-#     as.matrix()
-#   return (m)
-# }
-# 
-# l2_wvecf <- function(mv, x, y, ws) {
-#   m = mv[[1]]
-#   ds <- (m[,1]-x)^2 + (m[,2]-y)^2
-#   l2 <- sum(sapply(ds, sqrt) * ws[[1]]) / length(ws[[1]])
-#   return (l2)
-# }
-# 
-# l2distances <- inf_data %>%
-#   left_join(centroids, by = c("scene", "frame")) %>%
-#   # filter(frame == 1, scene == 1) %>%
-#   select(c(scene, frame, tracker, att_smoothed, pred_x_mu, pred_y_mu, total_exp_att)) %>%
-#   group_by(scene, frame) %>%
-#   summarise(pos_mat = list(cbind(as.array(pred_x_mu), as.array(pred_y_mu))),
-#             ws_vec = list(exp(att_smoothed / tau) / total_exp_att)) %>%
-#   ungroup() %>%
-#   left_join(inf_data, by = c("scene", "frame")) %>%
-#   left_join(centroids, by = c("scene", "frame")) %>%
-#   mutate(importance = exp(att_smoothed / tau) / total_exp_att) %>%
-#   select(c(scene, frame, tracker, importance, ws_vec, pos_mat, pred_x_mu, pred_y_mu)) %>%
-#   group_by(scene, frame, tracker) %>%
-#   mutate(att_d = l2_wvecf(pos_mat, pred_x_mu, pred_y_mu, ws_vec)) %>%
-#   select(c(scene, frame, tracker, importance, att_d)) %>%
-#   ungroup()
-
 
 # add distance to weighted and unweighted tracker means
 inf_data <- inf_data %>%
@@ -197,7 +142,7 @@ subject_data <- read_csv("../data/exp2/parsed_trials_exp2_random_probes.csv") %>
   select(-c(WID)) %>%
   replace_na(list(response_frame = Inf))
 
-hit_window = 36 # subjects hit if response 1.5s after probe onset
+hit_window = 48 # subjects hit if response 1.5s after probe onset
 probe_space = 60 # 2.5 seconds between probes
 with_probes <- subject_data %>%
   nest_by(ID) %>%
@@ -251,7 +196,7 @@ td_by_subj <- td_by_subj_tracker %>%
             n = n(),
             td_acc_se = sd(td) / sqrt(n)) 
 
-perf_thresh = 2.0
+perf_thresh = 2.5
 subject_performance <- td_by_subj %>%
   left_join(probe_by_subj) %>%
   mutate(passed = (td_acc_mu - 0.5) > perf_thresh*td_acc_se & (hr - fp > 0.05),
@@ -332,26 +277,6 @@ ate_by_probe %>%
 model_perf %>%
   ungroup() %>%
   summarise(a.cc = mean(td_acc_mu))
-
-cum_att <- inf_data %>%
-  group_by(scene) %>%
-  filter(frame == max(frame)) %>%
-  summarize(final_catt = sum(cum_att)) %>%
-  select(c(scene, final_catt)) %>%
-  right_join(ate_by_probe, by = "scene") %>%
-  mutate(final_catt = scale(final_catt))
-
-# cum_att %>%
-#   group_by(scene) %>%
-#   summarise(hr_mu = mean(hr),
-#             hr_sd = sd(hr),
-#             total_att = first(final_catt),
-#             p_is_target_mu = first(p_is_target_mu),
-#             ) %>%
-#   arrange(hr_mu) %>%
-#   ggplot(aes(y = hr_mu, x =reorder(scene, hr_mu))) +
-#   geom_point() +
-#   geom_errorbar(aes(ymin = hr_mu - hr_sd, ymax = hr_mu + hr_sd))
 ```
 
 <!-- Looking at trial order -->
@@ -376,16 +301,8 @@ cum_att <- inf_data %>%
 Focusing on specific scene
 
 ```{r}
-spec_scene = c(13, 16)
+spec_scene = c(2, 40)
 
-ate_by_probe %>%
-  filter(scene %in% spec_scene) %>% 
-  select(scene, epoch, tracker, hr, td, ttwm, zatt) %>%
-  arrange(scene, epoch)
-
-# good_subjects_data %>%
-#   filter(scene %in% spec_20472288scene) %>%
-#   view()
 
 timing_data <- good_subjects_data %>%
   ungroup() %>%
@@ -395,7 +312,7 @@ timing_data <- good_subjects_data %>%
          full = list(left_join(idata, data, by = c("scene", "frame")))) %>%
   select(-c(data, idata)) %>%
   unnest(cols = full) %>%
-  select(scene, frame, tracker, ttwm, att_smoothed, probe, ID, response_frame) %>%
+  select(scene, frame, tracker, ttwm, cycles_mu, probe, ID, response_frame) %>%
   ungroup()
 
 timing_data %>%
@@ -433,19 +350,11 @@ First take a look at just the tracker centroid mean
 
 ate_by_probe %>%
   ggplot(aes(x = ttwm, y = tttm)) +
-  geom_point(aes(color = high_att))
+  geom_point()
 
 ate_by_probe %>%
   ggplot(aes(x = tttm, y = hr)) +
-  geom_point(aes(color = high_att))
-
-# figure 3C
-ate_by_probe %>%
-  ggplot(aes(x = ttwm, y = hr, color = high_att)) +
-  geom_point(size = 3.1) +
-  # geom_smooth(method = "lm", color = "black") +
-  theme_classic() 
-
+  geom_point()
 
 # figure 3C
 ate_by_probe %>%
@@ -455,16 +364,16 @@ ate_by_probe %>%
   theme_classic() 
 
 
-ate_by_probe %>%
-  ggplot(aes(x = ttwm_mu, y = hr)) +
-  geom_point(color = "#5aa67b", size = 3.1) + 
-  geom_smooth(method = "lm", color = "black") +
-  theme_classic() 
-
 wtm_fit <- ate_by_probe %>%
-  with(lm(hr ~ ttwm + ttwm_mu + ttwm_mu * ttwm))
+  with(lm(hr ~ ttwm + ttwm_mu))
 wtm_fit %>%
   summary()
+
+ate_by_probe$ttwm_resid = wtm_fit$residuals
+
+ate_by_probe %>%
+  ggplot(aes(x = pred_x_sd + pred_y_sd, y = abs(ttwm_resid))) +
+  geom_point()
 
 wtm_fit <- ate_by_probe %>%
   with(lm(hr ~ ttwm,))
@@ -541,14 +450,6 @@ ate_by_probe %>%
   geom_smooth(method = "lm", color = "black") +
   theme_classic()
   
-model_att %>%
-  filter(scene == 4)
-
-interesting_scenes <- ate_by_probe %>%
-  select(scene, tracker, frame, hr, attention_mu, pred_x_mu, pred_y_mu, ttwm, tttm, abs_res_ttwm, res_res_hr) %>%
-  mutate(dcenter = sqrt(pred_x_mu*pred_x_mu + pred_y_mu * pred_y_mu),
-         res_res_hr = abs(res_res_hr)) %>%
-  arrange(res_res_hr, abs_res_ttwm)
 
 ```
 
@@ -589,7 +490,7 @@ res_res_fit %>%
 
 ate_by_probe %>%
   ggplot(aes(x = res_tttm, y = res_hr)) +
-  geom_point(aes(color = high_att)) + 
+  geom_point() + 
   geom_smooth(method = "lm")
 
 
@@ -639,7 +540,7 @@ rsq_function <- function(formula, data, indices) {
 
 ```{r}
 reps <- boot(data=subj_data_nested, statistic=rsq_function, R=1000, formula=hr ~ ttwm,
-             parallel = "multicore")
+             ncpus = 4, parallel = "multicore")
 #view results of boostrapping
 reps
 plot(reps)
@@ -707,7 +608,7 @@ rsq_function <- function(first, second, data, indices) {
 
 ```{r}
 reps <- boot(data=subj_data_nested, statistic=rsq_function, R=1000, first = "ttwm", second = "tttm",
-              ncpus = 4,  parallel = "multicore")
+              ncpus = 8,  parallel = "multicore")
 #view results of boostrapping
 reps
 plot(reps)
@@ -719,7 +620,7 @@ cis_hr_ac_res
 
 ```{r}
 reps <- boot(data=subj_data_nested, statistic=rsq_function, R=1000, first = "tttm", second = "ttwm",
-              ncpus = 4,  parallel = "multicore")
+              ncpus = 8,  parallel = "multicore")
 #view results of boostrapping
 reps
 plot(reps)
@@ -739,7 +640,7 @@ fig_3E <- function() {
   mutate(r2 = 0.5 * (conf.low + conf.high)) %>%
   ggplot(aes(x = model, y = r2, fill = model)) + 
   geom_col(width = 0.5) +
-  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.1, size = 0.7) + 
+geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.075, size = 0.7) + 
   theme(legend.position = "none",
         axis.ticks = element_blank(),
         axis.title = element_blank(),
@@ -752,6 +653,80 @@ withr::with_options(
   print(fig_3E())
 )
 
+```
+
+
+## SI
+
+
+### Accuracy
+
+```{r}
+
+td_by_scene <- td_by_subj_scene %>%
+  group_by(scene) %>%
+  summarise(td_human = mean(td),
+            td_human_sd = sd(td))
+
+td_by_scene <- model_perf %>%
+  group_by(scene) %>%
+  summarise(td_model = mean(td_acc_mu),
+            td_model_sd = sd(td_acc_mu)) %>%
+  left_join(td_by_scene, by = "scene")
+
+td_lr <- td_by_scene %>%
+  with(lm(td_human ~ td_model))
+
+td_by_scene$td_human_res = td_lr$residuals
+td_by_scene <- td_by_scene %>%
+  mutate(abs_res = abs(td_human_res))
+
+td_lr %>% summary()
+
+td_by_scene %>%
+  ggplot(aes(x = td_model, y = td_human)) +
+  geom_point() + 
+  geom_smooth(method = "lm")
+```
+
+```{r}
+subj_data_nested <- good_subjects_data %>%
+  ungroup() %>%
+  select(ID,scene, td) %>%
+  nest_by(ID)
+
+avg_group <- function(group) {
+  means <- group %>%
+    unnest(cols = c(ID, data)) %>%
+    group_by(scene) %>%
+    summarise(td = mean(td),
+              .groups = "keep",) %>%
+    ungroup
+  return(means$td)
+}
+
+split_half_cor <- function(data, indices) {
+  d <- data.frame(data)
+  nr = length(indices)
+  groups <- split(indices, 
+                  cut(seq_along(indices), 2, labels = FALSE))
+  gai = groups[[1]]
+  gbi = groups[[2]]
+  group_a <- avg_group(d[gai,])
+  group_b <- avg_group(d[gbi,])
+  df = data.frame(x = group_a,
+                  y = group_b)
+  fit <- df %>% with(lm(y ~ x))
+  return (summary(fit)$r.square)
+}
+reps <- boot(data = subj_data_nested, 
+             statistic=split_half_cor,
+             sim = "permutation",
+             R=1000)
+plot(reps)
+#calculate adjusted bootstrap percentile (BCa) interval
+cis_hr_ac_res <- boot.ci(reps, type="bca")
+cis_hr_ac_res
 ```
 
 

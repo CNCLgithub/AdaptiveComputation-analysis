@@ -24,12 +24,9 @@ knitr::opts_chunk$set(fig.pos = 'H',
 ```{r , include=FALSE}
 
 # install.packages("tidyverse")
-# install.packages("estimatr")
 # install.packages("boot")
 library(tidyverse)
-library(estimatr)
 library(boot)
-
 
 th <- theme_classic()
 theme_set(th)
@@ -45,10 +42,12 @@ subject_data <- read_csv("../data/exp1/exp1_difficulty_parsed_trials.csv") %>%
   mutate(difficulty = scale(difficulty))
 
 exp_design <- subject_data %>%
-  group_by(scene) %>%
+group_by(scene) %>%
   summarise(across(c(vel, n_dist), first))
 
-model_data <- read_csv("../data/exp1/exp1_difficulty_target_designation_g00_c30_11_30_2021.csv")
+model_att <- read_csv("../data/exp1/exp1_difficulty_target_designation_att.csv")
+model_perf <- read_csv("../data/exp1/exp1_difficulty_target_designation_perf.csv")
+
 ```
 
 ```{r, echo=FALSE, results='hide'}
@@ -98,18 +97,21 @@ good_td_by_scene <- good_subj_point_long %>%
   left_join(good_td_by_scene_tracker, by="scene") %>%
   left_join(exp_design, by="scene")
 
+model_compute_by_scene <- model_att %>%
+  group_by(scene, chain) %>%
+  summarise(cycles = sum(cycles)) %>%
+  group_by(scene) %>%
+  summarize(cycles = mean(cycles)) %>%
+  ungroup()
 
-model_td_compute_by_scene <- model_data %>%
-  select(-id) %>%
-  rowwise() %>%
-  mutate(td_chain = mean(c(tracker_1, tracker_2, tracker_3, tracker_4))) %>%
+model_perf_by_scene <- model_perf %>%
   group_by(scene) %>%         # average across chains
-  summarise(across(-chain, list(mu = mean, sd = sd))) %>%
-  rename(td_model = td_chain_mu) %>%
-  ungroup() %>%
-  mutate(compute = scale(log(cycles_mu + 0.1)))
-
+  summarise(td_model = mean(td_acc)) %>%
+  ungroup()
   # mutate(compute = scale(log(cycles_mu + 0.1)))
+
+model_cov_by_scene <- model_compute_by_scene %>%
+  left_join(model_perf_by_scene)
 ```
 
 ## Psychophysics summary
@@ -160,19 +162,19 @@ good_td_by_scene %>%
 > across(c(starts_with("td"), difficulty), list(mu = mean, sd = sd)),
 
 ```{r, echo = FALSE, results = 'hide'}
-model_td_compute_by_scene <- model_data %>%
-  select(-id) %>%
-  rowwise() %>%
-  mutate(td_chain = mean(c(tracker_1, tracker_2, tracker_3, tracker_4))) %>%
-  group_by(scene) %>%         # average across chains
-  summarise(across(-chain, list(mu = mean, sd = sd))) %>%
-  rename(td_model = td_chain_mu) %>%
-  ungroup() %>%
-  mutate(compute = scale(log(cycles_mu + 0.1)))
+# model_td_compute_by_scene <- model_data %>%
+#   select(-id) %>%
+#   rowwise() %>%
+#   mutate(td_chain = mean(c(tracker_1, tracker_2, tracker_3, tracker_4))) %>%
+#   group_by(scene) %>%         # average across chains
+#   summarise(across(-chain, list(mu = mean, sd = sd))) %>%
+#   rename(td_model = td_chain_mu) %>%
+#   ungroup() %>%
+#   mutate(compute = scale(log(cycles_mu + 0.1)))
 
   
 good_full_data <- good_td_by_scene %>%
-  left_join(model_td_compute_by_scene) %>%
+  left_join(model_cov_by_scene) %>%
   mutate(diff_td = td_mu - td_model)
 
 ```
@@ -195,7 +197,7 @@ good_full_data %>%
   pivot_longer(cols=c("td_mu", "td_model"), names_to="organism", values_to="acc") %>%
   ggplot(aes(x=acc)) +
   facet_grid(vars(organism)) +
-  geom_histogram(bins=12) + 
+  geom_histogram() + 
   ggtitle("Distribution of tracking accuracy for humans and model")
 
 good_full_data %>%
@@ -211,8 +213,19 @@ good_full_data %>%
 
 good_full_data %>%
   ggplot(aes(x = vel, y = n_dist, z = diff_td)) +
+  scale_fill_gradient2() +
   stat_summary_2d(breaks=breaks) +
   ggtitle("diff in acc ~ velocity + distractors")
+
+good_full_data %>%
+ggplot(aes(x=vel, y=n_dist, z=td_mu)) +
+  stat_summary_2d(breaks=breaks) +
+  ggtitle("human acc ~ velocity + distractors")
+
+good_full_data %>%
+ggplot(aes(x=vel, y=n_dist, z=td_model)) +
+  stat_summary_2d(breaks=breaks) +
+  ggtitle("model acc ~ velocity + distractors")
 ```
 
 > TODO: Look at these plots at the tracker level
@@ -220,7 +233,7 @@ good_full_data %>%
 Despite these differences in accuracy, model accuracy is still able to explain a strong portion of the variance in human performance
 ```{r}
 good_full_data %>%
-  with(lm_robust(td_mu ~ td_model)) %>%
+  with(lm(td_mu ~ td_model)) %>%
   summary()
 
 good_full_data %>%
@@ -237,18 +250,19 @@ good_full_data %>%
 Similar to tracking performance, total amount of allocated resources explains a strong amount of variance in human difficulty ratings. 
 ```{r}
 good_full_data %>%
-  pivot_longer(cols=c("difficulty_mu", "compute"), names_to="organism", values_to="effort") %>%
+  mutate(zcycles = scale(cycles)) %>%
+  pivot_longer(cols=c("difficulty_mu", "zcycles"), names_to="organism", values_to="effort") %>%
   ggplot(aes(x=effort)) +
   facet_grid(vars(organism)) +
   geom_histogram() + 
   ggtitle("Distribution of effort for humans and model")
 
 good_full_data %>%
-  with(lm_robust(difficulty_mu ~ compute)) %>%
+  with(lm(difficulty_mu ~ cycles)) %>%
   summary()
 
 good_full_data %>%
-  ggplot(aes(x=compute, y=difficulty_mu)) +
+  ggplot(aes(x=cycles, y=difficulty_mu)) +
   geom_point(color = "#5aa67b", size = 3.1) + 
   geom_smooth(method = "lm", color = "black") +
   theme_classic() 
@@ -266,22 +280,22 @@ good_full_data %>%
   geom_point()
 
 good_full_data %>%
-  with(lm_robust(difficulty_mu ~ td_mu)) %>%
+  with(lm(difficulty_mu ~ td_mu)) %>%
   summary()
 
 pred_compute <- good_full_data %>%
-  with(lm_robust(compute ~ td_mu)) %>%
+  with(lm(cycles ~ td_mu)) %>%
   predict()
 pred_difficulty <- good_full_data %>%
-  with(lm_robust(difficulty_mu ~ td_mu)) %>%
+  with(lm(difficulty_mu ~ td_mu)) %>%
   predict()
 
 good_full_data <- good_full_data %>%
   mutate(res_difficulty = difficulty_mu - pred_difficulty,
-         res_compute = compute - pred_compute)
+         res_compute = cycles - pred_compute)
 
 model <- good_full_data %>%
-  with(lm_robust(res_difficulty ~ res_compute))
+  with(lm(res_difficulty ~ res_compute))
 
 pred_pred_difficulty <- model %>% 
   predict()
@@ -334,24 +348,24 @@ To explore the possiblity that our model is able to explain effort above and bey
 Similar to before, a moderate but significant relationship survives and is at the upper limit of residual variance. 
 ```{r}
 pred_compute <- good_full_data %>%
-  with(lm_robust(compute ~ vel + n_dist)) %>%
+  with(lm(cycles ~ vel + n_dist)) %>%
   predict()
 pred_difficulty <- good_full_data %>%
-  with(lm_robust(difficulty_mu ~ vel + n_dist)) %>%
+  with(lm(difficulty_mu ~ vel + n_dist)) %>%
   predict()
 
 good_full_data <- good_full_data %>%
   mutate(res_difficulty = difficulty_mu - pred_difficulty,
-         res_compute = compute - pred_compute)
+         res_compute = cycles - pred_compute)
 
 good_full_data %>%
-  with(lm_robust(res_difficulty ~ res_compute)) %>%
+  with(lm(res_difficulty ~ res_compute)) %>%
   summary()
 
 good_full_data %>%
   ggplot(aes(x=res_compute, y=res_difficulty)) +
   geom_point() + 
-  geom_smooth(method="lm_robust")
+  geom_smooth(method="lm")
 ```
 
 # Bootstrapping
