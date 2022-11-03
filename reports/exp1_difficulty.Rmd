@@ -232,9 +232,11 @@ ggplot(aes(x=vel, y=n_dist, z=td_model)) +
 
 Despite these differences in accuracy, model accuracy is still able to explain a strong portion of the variance in human performance
 ```{r}
-good_full_data %>%
-  with(lm(td_mu ~ td_model)) %>%
+perf_model <- good_full_data %>%
+  with(lm(td_mu ~ td_model))
+perf_model %>%
   summary()
+good_full_data$td_resid = perf_model$residuals
 
 good_full_data %>%
   ggplot(aes(x = td_model, 
@@ -258,7 +260,7 @@ good_full_data %>%
   ggtitle("Distribution of effort for humans and model")
 
 good_full_data %>%
-  with(lm(difficulty_mu ~ cycles)) %>%
+  with(lm(difficulty_mu ~ log(cycles))) %>%
   summary()
 
 good_full_data %>%

@@ -16,12 +16,10 @@ header-includes:
 
 # Setup
 
-```{r global-options, include=FALSE}
+```{r , include=FALSE}
 knitr::opts_chunk$set(fig.pos = 'H', 
                       echo=TRUE, warning=FALSE, message=FALSE)
 
-```
-```{r , include=FALSE}
 library(tidyverse)
 library(ggplot2)
 library(readr)
@@ -47,89 +45,81 @@ probe_timings <- read_csv("../data/exp2/exp2_probe_map_random.csv") %>%
   filter(scene <= 40) %>%
   group_by(scene, frame) %>%
   summarise() %>%
-ungroup() %>%
-mutate(probe = frame) %>%
+  ungroup() %>%
+  mutate(probe = frame) %>%
   group_by(scene) %>%
   mutate(epoch = dense_rank(frame)) %>%
   ungroup()
 
-# scene, frame, tracker, eccentricity...
-prep_ecc_data <- read_csv("../data/exp2/exp2_probe_map_random_eccentricity.csv") %>%
+# TODO rename - Mario 11/03/2022
+# contains tracker id for each probe - not using eccentricity data
+# # scene, frame, tracker, eccentricity...
+probe_tracker_data <- read_csv("../data/exp2/exp2_probe_map_random_eccentricity.csv") %>%
   filter(scene <= 40) %>%
-  select(-zatt)
+  select(scene, frame, tracker)
 
 # accuracy per tracker
 # scene, tracker, acc, chain
 model_perf <- read_csv("../data/exp2/exp2_probes_target_designation_perf.csv") %>%
-  group_by(scene, tracker) %>%
+group_by(scene, tracker) %>%
   summarise(across(td_acc, list(mu = mean, sd = sd)))
 
 # cycles per frame
 # scene, frame, tracker, cycles, chain
-model_att <- read_csv("../data/exp2/exp2_probes_target_designation_att.csv") %>%
-  group_by(scene, frame, tracker) %>%
-  summarise(across(-chain, list(mu = mean, sd = sd))) %>%
-  ungroup() %>%
-  mutate(cycles_mu = cycles_mu + 0.1, # padding to allow for log
-         log_cycles = log(cycles_mu))
+model_att <- read_csv("../data/exp2/exp2_probes_target_designation_att.csv")
+
+# distance to nearest distractor
+# (not possible to extract directly from model predictions)
+dnd_predictions <- read_csv("../data/exp2/exp2_probes_dnd.csv") %>%
+  select(scene, frame, d_ic) %>%
+  rename(dist_to_nd = d_ic)
 
 ```
 
 ```{r results='hide'}
 
-# normalize distance to nearest distractor and distance to tracker centroid
-ecc_data <- prep_ecc_data %>%
-  rename(tttm = tracker_to_tracker_mean) %>%
-  mutate(dist_to_nd = scale(dist_to_nd),
-         log_tttm = log(tttm)) %>%
-  # add epochs
-  group_by(scene) %>%
-  mutate(epoch = dense_rank(frame)) %>% 
-  ungroup()
-
-
-model_smoothing = 12.0
-# add lag and lead att values
-# also add cumulative att
-# and smoothing
+model_smoothing = 8.0
+# add smoothing
 inf_data <- model_att %>%
-  group_by(scene, tracker) %>%
+  group_by(chain, scene, tracker) %>%
    # add smoothing
   nest_by() %>%
   mutate(att_xy = list(with(data,
-                          ksmooth(frame, importance_mu, kernel = "normal", 
+                          ksmooth(frame, importance, kernel = "normal",
                                   bandwidth = model_smoothing)))) %>%
   mutate(importance_smoothed = list(att_xy$y)) %>%
   unnest(cols = c(data, importance_smoothed)) %>%
   dplyr::select(-c(att_xy)) %>%
   ungroup()
-
+  
 # sum up the total amount of attention
 # and computed weighted tracker centroids
 # tau = 17.5
 centroids <- inf_data %>%
-  group_by(scene, frame) %>%
-  summarise(total_cycles = sum(cycles_mu),
-            weighted_x = sum(pred_x_mu * importance_smoothed),
-            weighted_y = sum(pred_y_mu * importance_smoothed)) %>%
+  group_by(scene, chain, frame) %>%
+  summarise(total_cycles = sum(cycles),
+            weighted_x = sum(pred_x * importance_smoothed),
+            weighted_y = sum(pred_y * importance_smoothed),
+            geo_x = mean(pred_x),
+            geo_y = mean(pred_y)) %>%
   ungroup()
 
 # add distance to weighted and unweighted tracker means
 inf_data <- inf_data %>%
-  left_join(centroids, by = c("scene", "frame")) %>%
-  # left_join(l2distances, by = c("scene", "frame", "tracker")) %>%
-  mutate(ttwm = sqrt((weighted_x - pred_x_mu)^2 + (weighted_y - pred_y_mu)^2),
-         log_ttwm = log(ttwm)) %>%
+  left_join(centroids, by = c("scene", "chain", "frame")) %>%
+  mutate(a3_centroid = sqrt((weighted_x - pred_x)^2 + (weighted_y - pred_y)^2),
+         geo_centroid = sqrt((geo_x - pred_x)^2 + (geo_y - pred_y)^2),
+         dist_to_center = sqrt(pred_x^2 + pred_y^2),
+         # con_centroid = sqrt((con_x - pred_x)^2 + (con_y - pred_y)^2)
+         ) %>%
+  group_by(scene, frame, tracker) %>%
+  summarise(across(-chain, list(mu = mean, sd = sd))) %>%
   ungroup()
 
-ttwm_stat <- inf_data %>%
-  group_by(scene, frame) %>%
-  summarise(ttwm_mu = mean(ttwm),
-            ttwm_sd = sd(ttwm))
-
-exp_data <- ecc_data %>%
+# merge all covariates
+exp_data <- probe_tracker_data %>%
   left_join(inf_data, by = c("scene", "frame", "tracker")) %>%
-  left_join(ttwm_stat, by = c("scene", "frame"))
+  left_join(dnd_predictions, by = c("scene", "frame"))
 ```
 
 ## Subject Data
@@ -247,17 +237,16 @@ hr_by_probe <- good_subjects_data %>%
             td = mean(td),
             rt = mean(delta_t),
             n = n()) %>%
-  ungroup()
+  ungroup() %>%
+  rename(frame = probe) 
 
-ate_by_probe <- hr_by_probe %>%
-  mutate(frame = probe) %>%
-  left_join(exp_data, by = c("scene", "epoch", "frame", "tracker")) %>%
+ate_by_probe <- exp_data %>%
+  left_join(hr_by_probe, by = c("scene", "frame", "tracker")) %>%
+  mutate(hr = ifelse(is.na(hr), 0, hr)) %>%
   group_by(scene) %>%
-  mutate(ttwm_rank = rank(ttwm),
+  mutate(a3_centroid_rank = rank(a3_centroid_mu),
          hr.rank = rank(hr)) %>%
   ungroup()
-# %>%
-#   filter(scene != 37, scene != 22)
 
 ```
 
@@ -279,29 +268,11 @@ model_perf %>%
   summarise(a.cc = mean(td_acc_mu))
 ```
 
-<!-- Looking at trial order -->
-
-<!-- ```{r} -->
-<!-- good_subjects_data %>% -->
-<!--   filter(pbh) %>% -->
-<!--   ggplot(aes(x = TrialOrder)) + -->
-<!--   geom_bar() + -->
-<!--   facet_grid(rows = vars(ID)) -->
-
-<!-- good_subjects_data %>% -->
-<!--   group_by(TrialOrder) %>% -->
-<!--   summarise(probe_fp = mean(probe_fp), -->
-<!--             d.prime = qnorm(mean(pbh) * 0.998 + 0.001) - qnorm(probe_fp*0.998 + 0.001)) %>% -->
-<!--   ggplot(aes(x = TrialOrder, y = d.prime)) + -->
-<!--   geom_col() -->
-
-<!-- ``` -->
-
 
 Focusing on specific scene
 
 ```{r}
-spec_scene = c(2, 40)
+spec_scene = c(24, 40)
 
 
 timing_data <- good_subjects_data %>%
@@ -312,18 +283,21 @@ timing_data <- good_subjects_data %>%
          full = list(left_join(idata, data, by = c("scene", "frame")))) %>%
   select(-c(data, idata)) %>%
   unnest(cols = full) %>%
-  select(scene, frame, tracker, ttwm, cycles_mu, probe, ID, response_frame) %>%
+  select(scene, frame, tracker, a3_centroid_mu, a3_centroid_sd, probe, ID, response_frame) %>%
   ungroup()
 
 timing_data %>%
   ggplot(aes(x = frame)) +
-  geom_line(aes(y = ttwm, color = factor(tracker))) +
-  # geom_point(aes(y = attention_mu * 50, color = factor(tracker)),)+
+  geom_line(aes(y = a3_centroid_mu, color = factor(tracker))) +
+  geom_ribbon(aes(ymin = a3_centroid_mu-a3_centroid_sd, 
+                  ymax=a3_centroid_mu+a3_centroid_sd, 
+                  color = factor(tracker)),
+              alpha = 0.2) +
   geom_vline(aes(xintercept = probe, color = "probe_onset"), linetype = "dashed") + 
-  # geom_vline(aes(xintercept = probe + hit_window, color = "fp_cutoff"), linetype = "longdash") +
-  # geom_vline(aes(xintercept = probe + probe_space, color = "trial_cutoff")) + 
   geom_histogram(aes(x =  response_frame), binwidth = 6) +
   facet_grid(rows = vars(scene))
+
+ate_by_probe %>% filter(scene == 40) %>% select(scene, frame, tracker, hr, a3_centroid_mu, geo_centroid_mu)
 ```
 
 
@@ -341,307 +315,230 @@ subject_performance %>%
 ```
 
 
-## Effect of weighted tracker centroid on hit rate
+## Predicting probe hit rate with univariate models
 
 
-First take a look at just the tracker centroid mean
+Here, we evaluate the ability of each model (adaptive computation as well as several heuristics models)
+to predict probe hit rate. 
 
-```{r}
-
-ate_by_probe %>%
-  ggplot(aes(x = ttwm, y = tttm)) +
-  geom_point()
+In general this is accomplished by computing a "center of attention" and using... TODO
+```{r Covariates on hit rate}
 
 ate_by_probe %>%
-  ggplot(aes(x = tttm, y = hr)) +
-  geom_point()
+  ggplot(aes(x = a3_centroid_mu, y = hr)) +
+  geom_point(color = "#5aa67b", size = 3.1) + 
+  geom_smooth(method = "lm", color = "black") +
+  theme_classic() +
+  ggtitle("HR ~ Attention Centroid")
 
-# figure 3C
 ate_by_probe %>%
-  ggplot(aes(x = ttwm, y = hr)) +
+  ggplot(aes(x = geo_centroid_mu, y = hr)) +
+  geom_point() + 
+  ggtitle("HR ~ Target Center")
+
+ate_by_probe %>%
+  ggplot(aes(x = dist_to_nd, y = hr)) +
+  geom_point() + 
+  ggtitle("HR ~ Nearest Distractor")
+
+ate_by_probe %>%
+  ggplot(aes(x = dist_to_center_mu, y = hr)) +
+  geom_point() + 
+  ggtitle("HR ~ Origin")
+```
+
+Linear model fitting and bootstrap analysis 
+
+
+```{r Univariate linear fits}
+
+print("Adaptive computation centroid")
+ate_by_probe %>%
+  with(lm(hr ~ a3_centroid_mu,)) %>%
+  summary()
+
+print("Target center")
+ate_by_probe %>%
+  with(lm(hr ~ geo_centroid_mu,)) %>%
+  summary()
+
+
+print("Distance to nearest distractor")
+ate_by_probe %>%
+  with(lm(hr ~ dist_to_nd,)) %>%
+  summary()
+
+print("Distance to origin")
+ate_by_probe %>%
+  with(lm(hr ~ dist_to_center_mu,)) %>%
+  summary()
+```
+```{r Fig 2C}
+ate_by_probe %>%
+  ggplot(aes(x = a3_centroid_mu, y = hr)) +
   geom_point(color = "#5aa67b", size = 3.1) + 
   geom_smooth(method = "lm", color = "black") +
   theme_classic() 
-
-
-wtm_fit <- ate_by_probe %>%
-  with(lm(hr ~ ttwm + ttwm_mu))
-wtm_fit %>%
-  summary()
-
-ate_by_probe$ttwm_resid = wtm_fit$residuals
-
-ate_by_probe %>%
-  ggplot(aes(x = pred_x_sd + pred_y_sd, y = abs(ttwm_resid))) +
-  geom_point()
-
-wtm_fit <- ate_by_probe %>%
-  with(lm(hr ~ ttwm,))
-wtm_fit %>%
-  summary()
-
-ttm_fit <- ate_by_probe %>%
-  with(lm(hr ~ tttm))
-ttm_fit %>%
-  summary()
-
-# for effect size + conf interval
-full_fit <- ate_by_probe %>%
-  with(lm(hr ~ ttwm + tttm))
-
-anova(wtm_fit, full_fit)
-
 ```
 
 
-### Res-res Attention centroid
-
-```{r}
-
-
-
-# for variance explained
-
-tttm_ttwm <- ate_by_probe %>%
-  with(lm(ttwm ~ tttm))
-tttm_ttwm %>%
-  summary()
-
-
-ate_by_probe$pred_ttwm <- tttm_ttwm %>%
-  predict(ate_by_probe)
-
-tttm_hr <- ate_by_probe %>%
-  with(lm(hr ~ tttm))
-
-tttm_hr %>%
-  summary()
-
-
-ate_by_probe$pred_hr <- tttm_hr %>%
-  predict(ate_by_probe)
-
-ate_by_probe <- ate_by_probe %>%
-  mutate(res_ttwm = ttwm - pred_ttwm,
-         abs_res_ttwm = abs(res_ttwm),
-         res_hr = hr - pred_hr)
-
-
-res_res_fit <- ate_by_probe %>%
-  with(lm(res_hr ~ res_ttwm))
-res_res_fit %>% 
-  summary()
-
-ate_by_probe$pred_res_hr <- res_res_fit %>%
-  predict(ate_by_probe)
-ate_by_probe <- ate_by_probe %>%
-  mutate(res_res_hr = res_hr - pred_res_hr)
-
-ate_by_probe %>%
-  top_n(5, abs(res_res_hr)) %>%
-  select(c(scene, probe, frame, tracker, hr, ttwm))
-ate_by_probe %>%
-  top_n(-5, abs(res_res_hr))
-
-# Fig 3C
-ate_by_probe %>%
-  ggplot(aes(x = res_ttwm, y = res_hr)) +
-  geom_point(color = "#5aa67b", size = 3.1) + 
-  geom_smooth(method = "lm", color = "black") +
-  theme_classic()
-  
-
-```
-
-Reverse partial regression
-
-```{r}
-
-# for variance explained
-
-ttwm_tttm <- ate_by_probe %>%
-  with(lm(tttm ~ ttwm))
-ttwm_tttm %>%
-  summary()
-
-
-ate_by_probe$pred_tttm <- ttwm_tttm %>%
-  predict(ate_by_probe)
-
-ttwm_hr <- ate_by_probe %>%
-  with(lm(hr ~ ttwm))
-
-ttwm_hr %>%
-  summary()
-
-
-ate_by_probe$pred_hr <- ttwm_hr %>%
-  predict(ate_by_probe)
-
-ate_by_probe <- ate_by_probe %>%
-  mutate(res_tttm = tttm - pred_tttm,
-         res_hr = hr - pred_hr)
-
-
-res_res_fit <- ate_by_probe %>%
-  with(lm(res_hr ~ res_tttm))
-res_res_fit %>% 
-  summary()
-
-ate_by_probe %>%
-  ggplot(aes(x = res_tttm, y = res_hr)) +
-  geom_point() + 
-  geom_smooth(method = "lm")
-
-
-```
-
-## Bootstrapping
-
-### First order effects
-
-```{r}
+```{r Univariate boot strap test}
 set.seed(0) # TODO: Should we set this seed?
 
-subj_data_nested <- good_subjects_data %>%
-  ungroup() %>%
-  nest_by(ID)
+# subj_data_nested <- good_subjects_data %>%
+#   ungroup() %>%
+#   # sorting out probed tracker
+#   pivot_longer(cols = starts_with("probe_"), 
+#                names_to = "probed_tracker_epoch",
+#                values_to = "tracker") %>%
+#   separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
+#   mutate(probed_tracker_epoch = as.numeric(probed_tracker_epoch)) %>%
+#   group_by(ID, scene, probe, epoch, probed_tracker_epoch, tracker) %>%
+#   filter(probed_tracker_epoch == epoch, hit | fp) %>%
+#   ungroup() %>%
+#   select(ID, scene, epoch, probe, tracker, probed_tracker_epoch, hit) %>%
+#   nest_by(ID)
 
-rsq_function <- function(formula, data, indices) {
-  d <- data[indices,] #allows boot to select sample of subjects
-  # average over subject points
-  full_d <- d %>% 
-    unnest(cols = c(ID, data)) %>%
-    # sorting out probed tracker
-    pivot_longer(cols = starts_with("probe_"), 
-                 names_to = "probed_tracker_epoch",
-                 values_to = "tracker") %>%
-    separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
-    mutate(probed_tracker_epoch = as.numeric(probed_tracker_epoch)) %>%
-    group_by(ID, scene, probe, epoch, probed_tracker_epoch, tracker) %>%
-    filter(probed_tracker_epoch == epoch, hit | fp) %>%
-    ungroup() %>%
-    group_by(scene, epoch, probe, tracker) %>%
-    summarise(hr = sum(hit) / n_passed,
-              td = mean(td),
-              rt = mean(delta_t),
-              .groups = "keep",) %>%
-    ungroup %>%
-    mutate(frame = probe) %>%
-    left_join(exp_data, by = c("scene", "epoch", "frame", "tracker"))
-    
-  fit <- lm(formula, data = full_d)
-  return(summary(fit)$r.square) #return R-squared of model
+# univariate_test <- function(predictor, data, indices) {
+#   d = data[indices,] #allows boot to select sample of subjects
+#   k = length(indices)
+#   # average over subject points
+#   full_d <- d %>% 
+#     unnest(cols = c(ID, data)) %>%
+#     group_by(scene, epoch, probe, tracker) %>%
+#     summarise(hr = sum(hit) / k,
+#               .groups = "keep",) %>%
+#     ungroup %>%
+#     mutate(frame = probe) %>%
+#     left_join(exp_data, by = c("scene", "frame", "tracker"))
+#   fit = full_d %>% with(lm(as.formula(paste("hr ~", predictor)))) %>% summary
+#   return(fit$r.squared) #return explained variance
+#   # fit = cor.test(as.formula(paste("~ hr +", predictor)), data = full_d)
+#   # return (fit$estimate)
+# }
+
+univariate_test <- function(data, indices) {
+  d = data[indices,] # sample trials with replacement 
+  k = length(indices)
+  ac = d %>% with(lm(hr ~ a3_centroid_mu)) %>% summary
+  tc = d %>% with(lm(hr ~ geo_centroid_mu)) %>% summary
+  nd = d %>% with(lm(hr ~ dist_to_nd)) %>% summary
+  or = d %>% with(lm(hr ~ dist_to_center_mu)) %>% summary
+  result <- c(ac$r.squared,
+              tc$r.squared, 
+              nd$r.squared,
+              or$r.squared)
+  return(result) #return explained variance
 }
+
+univ_boostrap_steps = 10000
 ```
 
-`hr ~ AC`
 
-
-```{r}
-reps <- boot(data=subj_data_nested, statistic=rsq_function, R=1000, formula=hr ~ ttwm,
-             ncpus = 4, parallel = "multicore")
+```{r univariate bootstraps}
+reps <- boot(data=ate_by_probe, 
+             statistic=univariate_test,
+             R=univ_boostrap_steps, 
+             ncpus = 2,
+             parallel = "multicore")
 #view results of boostrapping
 reps
-plot(reps)
+plot(reps,1)
+plot(reps,2)
+plot(reps,3)
+plot(reps,4)
 #calculate adjusted bootstrap percentile (BCa) interval
-cis_hr_ac <- boot.ci(reps, type="bca")
-cis_hr_ac
-```
 
-`hr ~ GC`
-
-
-```{r}
-reps <- boot(data=subj_data_nested, statistic=rsq_function, R=1000, formula=hr ~ tttm,
-              ncpus = 4,  parallel = "multicore")
-#view results of boostrapping
-reps
-plot(reps)
-#calculate adjusted bootstrap percentile (BCa) interval
-cis_hr_gc <- boot.ci(reps, type="bca")
-cis_hr_gc
+univ_cis_hr_ac <- boot.ci(reps, type="bca", index=1) # ac
+univ_cis_hr_tc <- boot.ci(reps, type="bca", index=2) # tc
+univ_cis_hr_nd <- boot.ci(reps, type="bca", index=3) # nd
+univ_cis_hr_or <- boot.ci(reps, type="bca", index=4) # or
 ```
 
 
+## Comparing models
 
-### Partial effects
+
+### Direct bootstrapped hypothesis testing
+
+The test uses a random sample of subjects (with replacement) to measure the
+frequency of the attention centroid producing a higher absolute correlation
+to a given heuristic model.
 
 ```{r}
-set.seed(0) # TODO: Should we set this seed?
+# dbht_function <- function(data, heuristic, indices) {
+#   d <- data[indices,] #allows boot to select sample of subjects
+#   k <- length(indices)
+#   # average over subject points
+#   full_d <- d %>% 
+#     unnest(cols = c(ID, data)) %>%
+#     group_by(scene, epoch, probe, tracker) %>%
+#     summarise(hr = sum(hit) / k,
+#               .groups = "keep",) %>%
+#     ungroup %>%
+#     mutate(frame = probe) %>%
+#     left_join(exp_data, by = c("scene", "frame", "tracker"))
+#   ac_r = cor.test(~ hr + a3_centroid_mu, data = full_d)
+#   hu_r = cor.test(as.formula(paste("~ hr +", heuristic)), data = full_d)
+#   return(abs(ac_r$estimate) > abs(hu_r$estimate)) 
+# }
 
-rsq_function <- function(first, second, data, indices) {
-  d <- data[indices,] #allows boot to select sample of subjects
-  # average over subject points
-  full_d <- d %>% 
-    unnest(cols = c(ID, data)) %>%
-    # sorting out probed tracker
-    pivot_longer(cols = starts_with("probe_"), 
-                 names_to = "probed_tracker_epoch",
-                 values_to = "tracker") %>%
-    separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
-    mutate(probed_tracker_epoch = as.numeric(probed_tracker_epoch)) %>%
-    group_by(ID, scene, probe, epoch, probed_tracker_epoch, tracker) %>%
-    filter(probed_tracker_epoch == epoch, hit | fp) %>%
-    ungroup() %>%
-    group_by(scene, epoch, probe, tracker) %>%
-    summarise(hr = sum(hit) / n_passed,
-              td = mean(td),
-              rt = mean(delta_t),
-              .groups = "keep",) %>%
-    ungroup %>%
-    mutate(frame = probe) %>%
-    left_join(exp_data, by = c("scene", "epoch", "frame", "tracker"))
-  # partial regressions
-  first_ind <- lm(as.formula(paste(first, " ~ ", second)),
-                  data = full_d)
-  first_dep <- lm(as.formula(paste("hr ~ ", second)),
-                  data = full_d)
-  fit <- lm(as.formula(paste("y ~ x")),
-            data = data.frame(y = first_dep$residuals,
-                              x = first_ind$residuals))
-  return(summary(fit)$r.square) #return R-squared of model
+dbht_function <- function(data, indices) {
+  d = data[indices,] # sample trials with replacement 
+  k = length(indices)
+  ac_r <- cor.test(~ hr + a3_centroid_mu, data = d)
+  tc_r <- cor.test(~ hr + geo_centroid_mu, data = d)
+  nd_r <- cor.test(~ hr + dist_to_nd, data = d)
+  or_r <- cor.test(~ hr + dist_to_center_mu, data = d)
+  result <- c(abs(ac_r$estimate) > abs(tc_r$estimate),
+              abs(ac_r$estimate) > abs(nd_r$estimate),
+              abs(ac_r$estimate) > abs(or_r$estimate))
+  return(result)
 }
-```
 
-`hr ~ AC` Residualized
 
-```{r}
-reps <- boot(data=subj_data_nested, statistic=rsq_function, R=1000, first = "ttwm", second = "tttm",
-              ncpus = 8,  parallel = "multicore")
-#view results of boostrapping
-reps
-plot(reps)
-#calculate adjusted bootstrap percentile (BCa) interval
-cis_hr_ac_res <- boot.ci(reps, type="bca")
-cis_hr_ac_res
-```
-`hr ~ GC` Residualized
-
-```{r}
-reps <- boot(data=subj_data_nested, statistic=rsq_function, R=1000, first = "tttm", second = "ttwm",
-              ncpus = 8,  parallel = "multicore")
-#view results of boostrapping
-reps
-plot(reps)
-#calculate adjusted bootstrap percentile (BCa) interval
-cis_hr_gc_res <- boot.ci(reps, type="bca")
-cis_hr_gc_res
+dbht_steps = 5000
 ```
 
 
-### Fig 3E
+```{r Attention centroid vs heuristics}
+reps <- boot(data=ate_by_probe, 
+             statistic=dbht_function,
+             R=dbht_steps, 
+             ncpus = 2, 
+             parallel = "multicore")
 
-```{r}
-fig_3E <- function() {
-  data.frame(model = c("Attention", "Geometric"),
-           conf.low = c(cis_hr_ac_res$bca[4], cis_hr_gc_res$bca[4]),
-           conf.high = c(cis_hr_ac_res$bca[5], cis_hr_gc_res$bca[5])) %>%
-  mutate(r2 = 0.5 * (conf.low + conf.high)) %>%
-  ggplot(aes(x = model, y = r2, fill = model)) + 
+#calculate pval
+dbht_tc_p_val = 1.0 - (sum(reps$t[, 1]) / reps$R)
+dbht_tc_p_val
+dbht_nd_p_val = 1.0 - (sum(reps$t[, 2]) / reps$R)
+dbht_nd_p_val
+dbht_or_p_val = 1.0 - (sum(reps$t[, 3]) / reps$R)
+dbht_or_p_val
+```
+
+
+Across all comparisons, the attention centroid forms a stronger correlation
+to probe hit rate (p < .001).
+
+
+```{r Fig 2D-i}
+univ_fig <- function() {
+  data.frame(model = c("ac", "tc", "nd", "or"),
+             conf.low = c(univ_cis_hr_ac$bca[4], 
+                          univ_cis_hr_tc$bca[4],
+                          univ_cis_hr_nd$bca[4],
+                          univ_cis_hr_or$bca[4]),
+             conf.high= c(univ_cis_hr_ac$bca[5], 
+                          univ_cis_hr_tc$bca[5],
+                          univ_cis_hr_nd$bca[5],
+                          univ_cis_hr_or$bca[5]),
+             heuristic = factor(c(0, 1, 1, 1))) %>%
+  mutate(r = 0.5 * (conf.low + conf.high)) %>%
+  ggplot(aes(x = reorder(model, -conf.high), y = r, fill = heuristic)) + 
   geom_col(width = 0.5) +
 geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.075, size = 0.7) + 
-  theme(legend.position = "none",
+theme(legend.position = "none",
         axis.ticks = element_blank(),
         axis.title = element_blank(),
         # axis.text = element_blank(),
@@ -650,10 +547,184 @@ geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.075, size = 0.7)
 }
 withr::with_options(
   list(ggplot2.discrete.fill = c("#5aa67b", "#6d9eeb")),
-  print(fig_3E())
+  print(univ_fig())
 )
 
 ```
+
+### Residual bootstrapped comparisons
+
+```{r}
+set.seed(0) # TODO: Should we set this seed?
+
+residual_test <- function(predictor, covariate, data, indices) {
+  d <- data[indices,] #allows boot to select sample of subjects
+  # average over subject points
+  full_d <- d %>% 
+    unnest(cols = c(ID, data)) %>%
+    group_by(scene, epoch, probe, tracker) %>%
+    summarise(hr = sum(hit) / n_passed,
+              .groups = "keep",) %>%
+    ungroup %>%
+    mutate(frame = probe) 
+  
+  full_d <- exp_data %>%
+    left_join(full_d, by = c("scene", "frame", "tracker")) %>%
+    mutate(hr = ifelse(is.na(hr), 0, hr))
+  # partial regressions
+  res_pred <- lm(as.formula(paste(predictor, " ~ ", covariate)),
+                  data = full_d)
+  res_hr <- lm(as.formula(paste("hr ~ ", covariate)),
+                  data = full_d)
+  res_data <- data.frame(pred = res_pred$residuals,
+                         hr = res_hr$residuals)
+  fit <- cor.test(as.formula("~ hr + pred"),
+                  data = res_data)
+  return(fit$estimate) #return R2 of model
+}
+
+res_bootstrap_steps = 1000
+```
+
+```{r Covariate - Attention Centroid}
+reps <- boot(data=subj_data_nested, 
+             statistic=residual_test, 
+             R=res_bootstrap_steps, 
+             predictor = "geo_centroid_mu",
+             covariate = "a3_centroid_mu",
+             ncpus = 2,  parallel = "multicore")
+reps
+plot(reps)
+res_ac_tc <- boot.ci(reps, type="bca")
+res_ac_tc
+
+reps <- boot(data=subj_data_nested, 
+             statistic=residual_test, 
+             R=res_bootstrap_steps, 
+             predictor = "dist_to_nd",
+             covariate = "a3_centroid_mu",
+             ncpus = 2,  parallel = "multicore")
+reps
+plot(reps)
+res_ac_nd <- boot.ci(reps, type="bca")
+res_ac_nd
+
+reps <- boot(data=subj_data_nested, 
+             statistic=residual_test, 
+             R=res_bootstrap_steps, 
+             predictor = "dist_to_center_mu",
+             covariate = "a3_centroid_mu",
+             ncpus = 2,  parallel = "multicore")
+reps
+plot(reps)
+res_ac_or <- boot.ci(reps, type="bca")
+res_ac_or
+```
+
+```{r Covariate - Target Center}
+reps <- boot(data=subj_data_nested, 
+             statistic=residual_test, 
+             R=res_bootstrap_steps, 
+             predictor = "a3_centroid_mu",
+             covariate = "geo_centroid_mu",
+             ncpus = 2,  parallel = "multicore")
+reps
+plot(reps)
+res_tc_ac <- boot.ci(reps, type="bca")
+res_tc_ac
+
+reps <- boot(data=subj_data_nested, 
+             statistic=residual_test, 
+             R=res_bootstrap_steps, 
+             predictor = "dist_to_nd",
+             covariate = "geo_centroid_mu",
+             ncpus = 2,  parallel = "multicore")
+reps
+plot(reps)
+res_tc_nd <- boot.ci(reps, type="bca")
+res_tc_nd
+
+reps <- boot(data=subj_data_nested, 
+             statistic=residual_test, 
+             R=res_bootstrap_steps, 
+             predictor = "dist_to_center_mu",
+             covariate = "geo_centroid_mu",
+             ncpus = 2,  parallel = "multicore")
+reps
+plot(reps)
+res_tc_or <- boot.ci(reps, type="bca")
+res_tc_or
+```
+```{r Covariate - Nearest Distractor}
+reps <- boot(data=subj_data_nested, 
+             statistic=residual_test, 
+             R=res_bootstrap_steps, 
+             predictor = "a3_centroid_mu",
+             covariate = "dist_to_nd",
+             ncpus = 2,  parallel = "multicore")
+reps
+plot(reps)
+res_nd_ac <- boot.ci(reps, type="bca")
+res_nd_ac
+
+reps <- boot(data=subj_data_nested, 
+             statistic=residual_test, 
+             R=res_bootstrap_steps, 
+             predictor = "geo_centroid_mu",
+             covariate = "dist_to_nd",
+             ncpus = 2,  parallel = "multicore")
+reps
+plot(reps)
+res_nd_tc <- boot.ci(reps, type="bca")
+res_nd_tc
+
+reps <- boot(data=subj_data_nested, 
+             statistic=residual_test, 
+             R=res_bootstrap_steps, 
+             predictor = "dist_to_center_mu",
+             covariate = "dist_to_nd",
+             ncpus = 2,  parallel = "multicore")
+reps
+plot(reps)
+res_nd_or <- boot.ci(reps, type="bca")
+res_nd_or
+```
+
+```{r Covariate - Origin}
+reps <- boot(data=subj_data_nested, 
+             statistic=residual_test, 
+             R=res_bootstrap_steps, 
+             predictor = "a3_centroid_mu",
+             covariate = "dist_to_center_mu",
+             ncpus = 2,  parallel = "multicore")
+reps
+plot(reps)
+res_or_ac <- boot.ci(reps, type="bca")
+res_or_ac
+
+reps <- boot(data=subj_data_nested, 
+             statistic=residual_test, 
+             R=res_bootstrap_steps, 
+             predictor = "geo_centroid_mu",
+             covariate = "dist_to_center_mu",
+             ncpus = 2,  parallel = "multicore")
+reps
+plot(reps)
+res_or_tc <- boot.ci(reps, type="bca")
+res_or_tc
+
+reps <- boot(data=subj_data_nested, 
+             statistic=residual_test, 
+             R=res_bootstrap_steps, 
+             predictor = "dist_to_nd",
+             covariate = "dist_to_center_mu",
+             ncpus = 2,  parallel = "multicore")
+reps
+plot(reps)
+res_or_nd <- boot.ci(reps, type="bca")
+res_or_nd
+```
+
 
 
 ## SI
@@ -671,7 +742,7 @@ td_by_scene <- td_by_subj_scene %>%
 td_by_scene <- model_perf %>%
   group_by(scene) %>%
   summarise(td_model = mean(td_acc_mu),
-            td_model_sd = sd(td_acc_mu)) %>%
+          td_model_sd = sd(td_acc_mu)) %>%
   left_join(td_by_scene, by = "scene")
 
 td_lr <- td_by_scene %>%
