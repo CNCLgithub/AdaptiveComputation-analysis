@@ -286,15 +286,14 @@ good_full_data %>%
   summary()
 
 pred_compute <- good_full_data %>%
-  with(lm(cycles ~ td_mu)) %>%
-  predict()
+  with(lm(log(cycles) ~ td_mu))
+
 pred_difficulty <- good_full_data %>%
-  with(lm(difficulty_mu ~ td_mu)) %>%
-  predict()
+  with(lm(difficulty_mu ~ td_mu))
 
 good_full_data <- good_full_data %>%
-  mutate(res_difficulty = difficulty_mu - pred_difficulty,
-         res_compute = cycles - pred_compute)
+  mutate(res_difficulty = pred_difficulty$residuals,
+         res_compute = pred_compute$residuals)
 
 model <- good_full_data %>%
   with(lm(res_difficulty ~ res_compute))
@@ -350,15 +349,14 @@ To explore the possiblity that our model is able to explain effort above and bey
 Similar to before, a moderate but significant relationship survives and is at the upper limit of residual variance. 
 ```{r}
 pred_compute <- good_full_data %>%
-  with(lm(cycles ~ vel + n_dist)) %>%
-  predict()
+  with(lm(log(cycles) ~ vel + n_dist))
+
 pred_difficulty <- good_full_data %>%
-  with(lm(difficulty_mu ~ vel + n_dist)) %>%
-  predict()
+  with(lm(difficulty_mu ~ vel + n_dist))
 
 good_full_data <- good_full_data %>%
-  mutate(res_difficulty = difficulty_mu - pred_difficulty,
-         res_compute = cycles - pred_compute)
+  mutate(res_difficulty = pred_difficulty$residuals,
+         res_compute = pred_compute$residuals)
 
 good_full_data %>%
   with(lm(res_difficulty ~ res_compute)) %>%
