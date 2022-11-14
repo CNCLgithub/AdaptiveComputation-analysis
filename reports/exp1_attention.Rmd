@@ -1,5 +1,5 @@
 ---
-title: "Exp 2"
+title: "Exp 1: Attention"
 output:
   pdf_document: default
   html_document:
@@ -60,12 +60,14 @@ probe_tracker_data <- read_csv("../data/exp2/exp2_probe_map_random_eccentricity.
 
 # accuracy per tracker
 # scene, tracker, acc, chain
+# model_perf <- read_csv("../data/exp2/11_11_2022_exp2_probes_target_designation_perf.csv") %>%
 model_perf <- read_csv("../data/exp2/exp2_probes_target_designation_perf.csv") %>%
-group_by(scene, tracker) %>%
+  group_by(scene, tracker) %>%
   summarise(across(td_acc, list(mu = mean, sd = sd)))
 
 # cycles per frame
 # scene, frame, tracker, cycles, chain
+# model_att <- read_csv("../data/exp2/11_11_2022_exp2_probes_target_designation_att.csv")
 model_att <- read_csv("../data/exp2/exp2_probes_target_designation_att.csv")
 
 # distance to nearest distractor
@@ -78,30 +80,35 @@ dnd_predictions <- read_csv("../data/exp2/exp2_probes_dnd.csv") %>%
 
 ```{r results='hide'}
 
-model_smoothing = 8.0
+model_smoothing = 48.0
 # add smoothing
 inf_data <- model_att %>%
   group_by(chain, scene, tracker) %>%
    # add smoothing
   nest_by() %>%
   mutate(att_xy = list(with(data,
-                          ksmooth(frame, importance, kernel = "normal",
+                        ksmooth(frame, importance, kernel = "normal",
+                                  bandwidth = model_smoothing))),
+         pred_xs = list(with(data,
+                        ksmooth(frame, pred_x, kernel = "normal",
+                                  bandwidth = model_smoothing))),
+         pred_ys = list(with(data,
+                        ksmooth(frame, pred_y, kernel = "normal",
                                   bandwidth = model_smoothing)))) %>%
-  mutate(importance_smoothed = list(att_xy$y)) %>%
-  unnest(cols = c(data, importance_smoothed)) %>%
-  dplyr::select(-c(att_xy)) %>%
+  mutate(importance_smoothed = list(att_xy$y),
+         pred_x_smoothed = list(pred_xs$y),
+         pred_y_smoothed = list(pred_ys$y)) %>%
+  unnest(cols = c(data, importance_smoothed, pred_x_smoothed, pred_y_smoothed)) %>%
+  dplyr::select(-c(att_xy, pred_xs, pred_ys)) %>%
   ungroup()
   
-# sum up the total amount of attention
-# and computed weighted tracker centroids
-# tau = 17.5
 centroids <- inf_data %>%
   group_by(scene, chain, frame) %>%
   summarise(total_cycles = sum(cycles),
-            weighted_x = sum(pred_x * importance_smoothed),
-            weighted_y = sum(pred_y * importance_smoothed),
-            geo_x = mean(pred_x),
-            geo_y = mean(pred_y)) %>%
+            weighted_x = sum(pred_x_smoothed * importance_smoothed),
+            weighted_y = sum(pred_y_smoothed * importance_smoothed),
+            geo_x = mean(pred_x_smoothed),
+            geo_y = mean(pred_y_smoothed)) %>%
   ungroup()
 
 # add distance to weighted and unweighted tracker means
@@ -378,7 +385,13 @@ ate_by_probe %>%
   ggplot(aes(x = a3_centroid_mu, y = hr)) +
   geom_point(color = "#5aa67b", size = 3.1) + 
   geom_smooth(method = "lm", color = "black") +
-  theme_classic() 
+  theme_classic() + 
+  theme(legend.position = "none",
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          # axis.text = element_blank(),
+          # aspect.ratio = 1
+          )
 ```
 
 
@@ -407,7 +420,7 @@ univ_boostrap_steps = 10000
 reps <- boot(data=ate_by_probe, 
              statistic=univariate_test,
              R=univ_boostrap_steps, 
-             ncpus = 2,
+             ncpus = 8,
              parallel = "multicore")
 #view results of boostrapping
 reps
@@ -415,12 +428,16 @@ plot(reps,1)
 plot(reps,2)
 plot(reps,3)
 plot(reps,4)
-#calculate adjusted bootstrap percentile (BCa) interval
 
-univ_cis_hr_ac <- boot.ci(reps, type="bca", index=1) # ac
-univ_cis_hr_tc <- boot.ci(reps, type="bca", index=2) # tc
-univ_cis_hr_nd <- boot.ci(reps, type="bca", index=3) # nd
-univ_cis_hr_or <- boot.ci(reps, type="bca", index=4) # or
+#calculate bootstrap percentiles
+univ_cis_hr_ac <- boot.ci(reps, type="perc", index=1) # ac
+univ_cis_hr_ac$mu <- mean(reps$t[,1])
+univ_cis_hr_tc <- boot.ci(reps, type="perc", index=2) # tc
+univ_cis_hr_tc$mu <- mean(reps$t[,2])
+univ_cis_hr_nd <- boot.ci(reps, type="perc", index=3) # nd
+univ_cis_hr_nd$mu <- mean(reps$t[,3])
+univ_cis_hr_or <- boot.ci(reps, type="perc", index=4) # or
+univ_cis_hr_or$mu <- mean(reps$t[,4])
 ```
 
 
@@ -447,7 +464,7 @@ dbht_function <- function(data, indices) {
   return(result)
 }
 
-dbht_steps = 5000
+dbht_steps = 10000
 ```
 
 
@@ -457,7 +474,7 @@ set.seed(0)
 reps <- boot(data=ate_by_probe, 
              statistic=dbht_function,
              R=dbht_steps, 
-             ncpus = 2, 
+             ncpus = 8, 
              parallel = "multicore")
 
 #calculate pval
@@ -525,12 +542,39 @@ reps <- boot(data = subj_data_nested,
              statistic=split_half_cor,
              sim = "permutation",
              R=5000,
-             ncpus = 2, 
+             ncpus = 8, 
              parallel = "multicore")
-plot(reps)
-shc_probe_hr_ci <- boot.ci(reps, type="bca")
+shc_plot <- plot(reps)
+shc_probe_hr_ci <- boot.ci(reps, type="all")
 shc_probe_hr_ci
+shc_probe_hr_ci$mu <- mean(reps$t)
 ```
+
+<!-- ```{r  Leave one out analysis} -->
+
+<!-- leave_one_out_test <- function(data, indices) { -->
+<!--   d <- data.frame(data) -->
+<!--   nr = length(indices) -->
+<!--   all_but_one = indices[2:nr] -->
+<!--   the_one = indices[1:1] -->
+<!--   group_a <- group_perf(d[all_but_one,], "a") -->
+<!--   group_b <- group_perf(d[the_one,], "b") -->
+<!--   df <- rbind(group_a, group_b) %>% -->
+<!--     pivot_wider(names_from = g, -->
+<!--                 values_from = hr) -->
+<!--   fit <- df %>% with(lm(b ~ a)) %>% summary -->
+<!--   return (fit$r.square) -->
+<!-- } -->
+<!-- reps <- boot(data = subj_data_nested,  -->
+<!--              statistic=leave_one_out_test, -->
+<!--              sim = "permutation", -->
+<!--              R=5000, -->
+<!--              ncpus = 8,  -->
+<!--              parallel = "multicore") -->
+<!-- loo_plot <- plot(reps) -->
+<!-- loo_probe_hr_ci <- boot.ci(reps, type="bca") -->
+<!-- loo_probe_hr_ci$mu <- mean(reps$t) -->
+<!-- ``` -->
 
 
 Across all comparisons, the attention centroid forms a stronger correlation
@@ -539,31 +583,34 @@ to probe hit rate (p < .001).
 
 ```{r Fig 2D-i}
 
-fig2di_df <- data.frame(model = c("ac", "tc", "nd", "or"),
-             conf.low = c(univ_cis_hr_ac$bca[4], 
-                          univ_cis_hr_tc$bca[4],
-                          univ_cis_hr_nd$bca[4],
-                          univ_cis_hr_or$bca[4]),
-             conf.high= c(univ_cis_hr_ac$bca[5], 
-                          univ_cis_hr_tc$bca[5],
-                          univ_cis_hr_nd$bca[5],
-                          univ_cis_hr_or$bca[5]),
-             heuristic = factor(c(0, 1, 1, 1)),
-             shc_min = shc_probe_hr_ci$bca[4],
-             shc_max = shc_probe_hr_ci$bca[5],
-             yintercept = mean(shc_probe_hr_ci$bca[4:5])) %>%
-  mutate(r = 0.5 * (conf.low + conf.high))
+fig2di_df <- data.frame(
+  model = c("ac", "tc", "nd", "or"),
+  r.squared = c(univ_cis_hr_ac$mu,
+                univ_cis_hr_tc$mu,
+                univ_cis_hr_nd$mu,
+                univ_cis_hr_or$mu),
+  conf.low = c(univ_cis_hr_ac$perc[4], 
+               univ_cis_hr_tc$perc[4],
+               univ_cis_hr_nd$perc[4],
+               univ_cis_hr_or$perc[4]),
+  conf.high= c(univ_cis_hr_ac$perc[5], 
+               univ_cis_hr_tc$perc[5],
+               univ_cis_hr_nd$perc[5],
+               univ_cis_hr_or$perc[5]),
+  heuristic = factor(c(0, 1, 1, 1)),
+  shc_min = shc_probe_hr_ci$bca[4],
+  shc_max = shc_probe_hr_ci$bca[5],
+  yintercept = mean(shc_probe_hr_ci$mu))
+
 univ_fig <- function() {
   fig2di_df%>%
-    ggplot(aes(x = reorder(model, -conf.high), y = r, fill = heuristic)) + 
+    ggplot(aes(x = reorder(model, -conf.high), y = r.squared, fill = heuristic)) + 
     geom_col(width = 0.5, position = position_dodge(width = 0.9)) +
     geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.075, size = 0.7) +
     geom_hline(aes(yintercept = yintercept), 
                linetype = "dashed") +
-    # annotate("rect", xmin = -Inf, xmax = Inf, ymin = shc_probe_hr_ci$bca[4],
-    #          ymax = shc_probe_hr_ci$bca[5], fill = "grey", alpha = .5, color = NA) +
+    ylim(0., 0.8) +
     theme(legend.position = "none",
-          axis.ticks = element_blank(),
           axis.title = element_blank(),
           # axis.text = element_blank(),
           aspect.ratio = 1
@@ -606,10 +653,17 @@ residual_test <- function(data, indices) {
   res_ac_tc <- resid_r.squared("a3_centroid_mu", "geo_centroid_mu", d)
   res_ac_nd <- resid_r.squared("a3_centroid_mu", "dist_to_nd", d)
   res_ac_or <- resid_r.squared("a3_centroid_mu", "dist_to_center_mu", d)
+  
+  # direct hypothesis testing
+  # r2 of ac model > heuristic
+  ac_vs_tc <- res_tc_ac[1] > res_ac_tc[1]
+  ac_vs_nd <- res_nd_ac[1] > res_ac_nd[1]
+  ac_vs_or <- res_or_ac[1] > res_ac_or[1]
  
-  result <- c(res_tc_ac, res_nd_ac, res_or_ac, 
-              res_ac_tc, res_ac_nd, res_ac_or)
-  return(result) #return R2 of model
+  result <- c(res_tc_ac, res_nd_ac, res_or_ac, # R2 of AC
+              res_ac_tc, res_ac_nd, res_ac_or, # R2 of heuristics
+              ac_vs_tc, ac_vs_nd, ac_vs_or)    # pval for hypothesis testing
+  return(result)
 }
 
 res_bootstrap_steps = 5000
@@ -619,53 +673,79 @@ res_bootstrap_steps = 5000
 reps <- boot(data=ate_by_probe, 
              statistic=residual_test, 
              R=res_bootstrap_steps, 
-             ncpus = 2,  parallel = "multicore")
+             ncpus = 8,  parallel = "multicore")
 # visualizing samples for
 # attention centroid after residualizing:
 plot(reps, 1) # target center
 plot(reps, 3) # nearest distractor
 plot(reps, 5) # origin
+
 # calculating CIs and pvalues
-resid_tc_ac <- boot.ci(reps, type="bca", index=1) 
-tc_ac_p_val <- sum(reps$t[, 2]) / reps$R 
-resid_nd_ac <- boot.ci(reps, type="bca", index=3) 
+resid_tc_ac <- boot.ci(reps, type="all", index=1)
+resid_tc_ac$mu <- mean(reps$t[,1])
+tc_ac_p_val <- sum(reps$t[, 2]) / reps$R
+
+resid_nd_ac <- boot.ci(reps, type="all", index=3)
+resid_nd_ac$mu <- mean(reps$t[,3])
 nd_ac_p_val <- sum(reps$t[, 4]) / reps$R 
-resid_or_ac <- boot.ci(reps, type="bca", index=5) 
+
+resid_or_ac <- boot.ci(reps, type="all", index=5)
+resid_or_ac$mu <- mean(reps$t[,5]) 
 or_ac_p_val <- sum(reps$t[, 6]) / reps$R 
-resid_ac_tc <- boot.ci(reps, type="bca", index=7) 
+
+resid_ac_tc <- boot.ci(reps, type="all", index=7)
+resid_ac_tc$mu <- mean(reps$t[,7]) 
 ac_tc_p_val <- sum(reps$t[, 8]) / reps$R 
-resid_ac_nd <- boot.ci(reps, type="bca", index=9) 
+
+resid_ac_nd <- boot.ci(reps, type="all", index=9)
+resid_ac_nd$mu <- mean(reps$t[,9])
 ac_nd_p_val <- sum(reps$t[, 10]) / reps$R 
-resid_ac_or <- boot.ci(reps, type="bca", index=11) 
+
+resid_ac_or <- boot.ci(reps, type="all", index=11) 
+resid_ac_or$mu <- mean(reps$t[,11])
 ac_or_p_val <- sum(reps$t[, 12]) / reps$R 
+
+# direct hypothesis testing
+ac_vs_tc_pval <- 1.0 - sum (reps$t[,13]) / reps$R
+ac_vs_nd_pval <- 1.0 - sum (reps$t[,14]) / reps$R
+ac_vs_or_pval <- 1.0 - sum (reps$t[,15]) / reps$R
+
 
 # aggregrating results
 models <- c("ac", "tc", "nd", "or")
 resid_results <-data.frame(model = c(rep("ac", each=3), "tc", "nd", "or"),
                            covariate = c("tc", "nd", "or",  # ac
                                          "ac", "ac", "ac"), # heuristics
-                           conf.low = c(resid_tc_ac$bca[4],
-                                        resid_nd_ac$bca[4],
-                                        resid_or_ac$bca[4],
-                                        resid_ac_tc$bca[4],
-                                        resid_ac_nd$bca[4],
-                                        resid_ac_or$bca[4]),
-                           conf.high= c(resid_tc_ac$bca[5],
-                                        resid_nd_ac$bca[5], 
-                                        resid_or_ac$bca[5],
-                                        resid_ac_tc$bca[5],
-                                        resid_ac_nd$bca[5],
-                                        resid_ac_or$bca[5]),
+                           r.squared = c(resid_tc_ac$mu,
+                                         resid_nd_ac$mu,
+                                         resid_or_ac$mu,
+                                         resid_ac_tc$mu,
+                                         resid_ac_nd$mu,
+                                         resid_ac_or$mu),
+                           conf.low = c(resid_tc_ac$perc[4],
+                                        resid_nd_ac$perc[4],
+                                        resid_or_ac$perc[4],
+                                        resid_ac_tc$perc[4],
+                                        resid_ac_nd$perc[4],
+                                        resid_ac_or$perc[4]),
+                           conf.high= c(resid_tc_ac$perc[5],
+                                        resid_nd_ac$perc[5], 
+                                        resid_or_ac$perc[5],
+                                        resid_ac_tc$perc[5],
+                                        resid_ac_nd$perc[5],
+                                        resid_ac_or$perc[5]),
                            p.val =    c(tc_ac_p_val, 
                                         nd_ac_p_val,
                                         or_ac_p_val,
                                         ac_tc_p_val,
                                         ac_nd_p_val,
                                         ac_or_p_val)
-                           ) %>%
-  mutate(r.squared = 0.5 * (conf.low + conf.high))
+                           )
 
 resid_results
+ac_vs_tc_pval
+ac_vs_nd_pval
+ac_vs_or_pval
 ```
 
 ```{r Fig 2D-ii}
@@ -675,7 +755,7 @@ filter(model == "ac") %>%
 ggplot(aes(x = reorder(covariate, r.squared), y = r.squared)) + 
   geom_col(width = 0.5, fill = "#5aa67b")+
   geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.075, size = 0.7) + 
-  ylim(0., 0.7) +
+  ylim(0., 0.8) +
   theme(legend.position = "none",
         axis.ticks = element_blank(),
         axis.title = element_blank(),
@@ -695,7 +775,7 @@ resid_fig <- function() {
     geom_col(width = 0.5, fill = "darkgrey") +
     geom_errorbar(aes(ymin = conf.low, ymax = conf.high), 
                   width = 0.075, size = 0.7) + 
-    ylim(0., 0.7) +
+    ylim(0., 0.8) +
     theme(legend.position = "none",
           axis.ticks = element_blank(),
           axis.title = element_blank(),
@@ -780,9 +860,10 @@ reps <- boot(data = subj_data_nested,
              statistic=split_half_cor,
              sim = "permutation",
              R=5000,
-             ncpus = 2, 
+             ncpus = 8, 
              parallel = "multicore")
 plot(reps)
 boot.ci(reps, type="bca")
+mean(reps$t)
 ```
 
