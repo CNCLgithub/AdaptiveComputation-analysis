@@ -201,7 +201,12 @@ perf_model %>%
 good_full_data %>%
   ggplot(aes(x = td_model, 
              y = td_mu)) +
-  geom_point()
+  geom_point(color = "#5aa67b", size = 3.1) + 
+  geom_smooth(method = "lm", color = "black") +
+  theme_classic() + 
+  theme(legend.position = "none",
+        axis.ticks = element_blank(),
+        axis.title = element_blank())
 
 ```
 ```{r bootstrap accuracy}
@@ -384,11 +389,11 @@ resid_results
 ```{r Fig 3C}
 
 resid_results %>%
-  filter(covariate != "exp") %>%
+  # filter(covariate != "exp") %>%
   ggplot(aes(x = reorder(covariate, r.squared), y = r.squared)) + 
   geom_col(width = 0.5, fill = "#5aa67b")+
   geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.075, size = 0.7) + 
-  ylim(0., 0.8) +
+  # ylim(0., 0.8) +
   theme(legend.position = "none",
         axis.ticks = element_blank(),
         axis.title = element_blank(),
@@ -402,7 +407,7 @@ A moderate but significant amount of residualized variance in difficulty was exp
 It is important to note that this residualized $R^2$ approaches the upper limit of possible variance explained given the stregnth of the first stage. 
 
 
-# Bootstrapping
+# Noise-level
 
 Using this [guide](https://www.statology.org/bootstrapping-in-r/)
 
@@ -417,9 +422,10 @@ subj_data_nested <- passed_id %>%
 effort_by_group <- function(group, gname) {
   d <- group %>%
     unnest(cols = c(ID, data)) %>%
-    select(-td) %>% # remove trial perf across trackers for each subj
+    # select(-td) %>% # remove trial perf across trackers for each subj
     group_by(scene) %>% # average across subjects
-    summarise(effort = mean(effort)) %>%
+    summarise(effort = mean(effort),
+              td  = mean(td)) %>%
     mutate(group = gname)
   return (d)
 }
@@ -430,10 +436,12 @@ splithalf_cor <- function(data, indices) {
                       2,
                       labels = FALSE))
   a <- data[unlist(splits[1]),] %>%
-    effort_by_group("a")
+    effort_by_group("a") %>%
+    select(-td)
   
   b <-data[unlist(splits[2]),] %>%
-    effort_by_group("b")
+    effort_by_group("b") %>%
+    select(-td)
 
   df <- rbind(a, b) %>%
     pivot_wider(names_from = group,
@@ -455,4 +463,101 @@ plot(reps)
 cis_split_half <- boot.ci(reps, type="perc")
 cis_split_half
 mean(reps$t)
+```
+
+# Subject bootstrapping
+
+```{r test definition}
+set.seed(0)
+
+subj_data_nested <- passed_id %>%
+  left_join(td_by_subj_tracker, by = "ID") %>%
+  ungroup() %>%
+  nest_by(ID)
+
+
+resid_r.squared <- function(covariate, predictor, data) {
+  res_pred <- lm(as.formula(paste(predictor, " ~ ", covariate)),
+                  data = data)
+  res_hr <- lm(as.formula(paste("effort ~ ", covariate)),
+                  data = data)
+  res_data <- data.frame(pred = res_pred$residuals,
+                         dep = res_hr$residuals)
+  r <- cor.test(~ dep + pred, data = res_data)
+  return(c((r$estimate)^2, r$estimate < 0.0))
+}
+
+residual_test <- function(data, indices) {
+  # sample trials with replacement
+  d = data[indices,] %>%
+    effort_by_group("a") %>%
+    left_join(model_cov_by_scene, by = "scene") %>%
+    left_join(exp_design, by = "scene")
+
+  res_exp <- resid_r.squared("vel + n_dist", "arousal", d)
+  res_subj_td <- resid_r.squared("td", "arousal", d)
+  res_model_td <- resid_r.squared("td_model", "arousal", d)
+  result <- c(res_exp, res_subj_td, res_model_td)
+  return(result) #return R2 of model
+}
+
+res_bootstrap_steps = 5000
+```
+
+```{r Results}
+reps <- boot(data=subj_data_nested, 
+             statistic=residual_test, 
+             R=res_bootstrap_steps, 
+             ncpus = 8,  parallel = "multicore")
+# visualizing samples for
+# arousal after residualizing:
+plot(reps, 1) # experimental design
+plot(reps, 3) # subject accuracy
+plot(reps, 5) # model accuracy
+# calculating CIs and pvalues
+res_exp <- boot.ci(reps, type="perc", index=1) 
+res_exp$mu <- mean(reps$t[, 1])
+res_exp_p_val <- sum(reps$t[, 2]) / reps$R 
+res_subj_td <- boot.ci(reps, type="perc", index=3) 
+res_subj_td$mu <- mean(reps$t[, 3])
+res_subj_td_p_val <- sum(reps$t[, 4]) / reps$R 
+res_model_td <- boot.ci(reps, type="perc", index=5)
+res_model_td$mu <- mean(reps$t[, 5])
+res_model_td_p_val <- sum(reps$t[, 6]) / reps$R 
+
+# aggregrating results
+resid_results <-data.frame(
+                           covariate = c("exp", "subj_td", "model_td"),
+                           order = c(3, 1, 2),
+                           r.squared = c(res_exp$mu,
+                                         res_subj_td$mu,
+                                         res_model_td$mu),
+                           conf.low = c(res_exp$perc[4],
+                                        res_subj_td$perc[4],
+                                        res_model_td$perc[4]),
+                           conf.high= c(res_exp$perc[5],
+                                        res_subj_td$perc[5], 
+                                        res_model_td$perc[5]),
+                           p.val =    c(res_exp_p_val, 
+                                        res_subj_td_p_val,
+                                        res_model_td_p_val)
+                           )
+
+resid_results
+```
+
+```{r Fig 3C}
+
+resid_results %>%
+  # filter(covariate != "exp") %>%
+  ggplot(aes(x = reorder(covariate, order), y = r.squared)) + 
+  geom_col(width = 0.75, fill = "#5aa67b")+
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.175, size = 0.7) + 
+  # ylim(0., 0.8) +
+  theme(legend.position = "none",
+        axis.ticks = element_blank(),
+        axis.title = element_blank(),
+        # axis.text = element_blank(),
+        aspect.ratio = 2.
+        )
 ```

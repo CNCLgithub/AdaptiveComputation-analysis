@@ -3,26 +3,23 @@ library(ggplot2)
 library(readr)
 library(scales)
 # library(raster)
-library(minpack.lm)
-library(pracma)
+# library(minpack.lm)
+# library(pracma)
 
 th <- theme_classic()
 theme_set(th)
 
 # cycles per frame
 # scene, frame, tracker, cycles, chain
-model_att <- read_csv("data/exp1/exp1_difficulty_target_designation_att_fig4.csv") 
+model_att <- read_csv("project/data/exp1/exp1_difficulty_target_designation_att.csv") 
 
-model_smoothing = 8
+model_smoothing = 12
 
 # apply same time-smoothing procedure as analysis
 exp_summary <- model_att %>%
   group_by(scene, frame, tracker) %>%
   summarise(across(-chain, list(mu = mean, sd = sd))) %>%
   ungroup() %>%
-  mutate(cycles_mu = cycles_mu + 0.1, # padding to allow for log
-         zatt = scale(attention_mu),
-         log_att = log(cycles_mu)) %>%
   group_by(scene, tracker) %>%
   # add smoothing
   nest_by() %>%
@@ -60,9 +57,9 @@ exp_summary %>%
   theme(legend.position = "none",
         axis.ticks = element_blank(),
         axis.title = element_blank(),
-        axis.text = element_blank(),
+        # axis.text = element_blank(),
         aspect.ratio = 0.4,
-        # axis.line = element_blank()
+    axis.line = element_blank()
   ) + 
   scale_x_continuous(expand = expansion(mult = c(0.02, 0.01)))
 
