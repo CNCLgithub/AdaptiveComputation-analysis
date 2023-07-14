@@ -1,0 +1,127 @@
+---
+title: "Exp 3: Model simulations"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+header-includes:
+ \usepackage{booktabs}
+ \usepackage{longtable}
+ \usepackage{array}
+ \usepackage{multirow}
+ \usepackage{wrapfig}
+ \usepackage{float}
+ \floatplacement{figure}{H}
+---
+
+# Setup
+
+```{r , include=FALSE}
+knitr::opts_chunk$set(fig.pos = 'H', 
+                      echo=TRUE, warning=FALSE, message=FALSE)
+
+library(tidyverse)
+library(ggplot2)
+library(readr)
+library(boot)
+
+th <- theme_classic()
+theme_set(th)
+```
+
+load data (subject, exp, scenes)
+
+
+## Model and Design data
+
+```{r echo=FALSE, results='hide'}
+
+# scene, frame
+probe_timings <- read_csv("../data/exp2/exp2_probe_map_random.csv") %>%
+  filter(scene <= 40) %>%
+  group_by(scene, frame) %>%
+  summarise() %>%
+  ungroup() %>%
+  mutate(probe = frame) %>%
+  group_by(scene) %>%
+  mutate(epoch = dense_rank(frame)) %>%
+  ungroup()
+
+# covariates pre-processed by `scripts/exp1_attention_process_chains.R`
+exp_data <- read_csv("../data/exp2/model_probe_covariates.csv") %>%
+  select(-dist_to_nd)
+
+dnd_data <- read_csv("../data/exp2/exp2_probes_adaptive_computation_td_dnd.csv") %>%
+  select(-contains("pred"))
+
+exp_data <- exp_data %>%
+  left_join(dnd_data, by = c("scene", "frame", "tracker")) %>%
+  mutate(deg_loc_error = (loc_error_mean / 800) * 6.97,
+         deg_nn_dist = (nn_dist_mean / 800) * 6.97)
+
+```
+## Sanity checks
+
+```{r}
+
+exp_data %>%
+  ggplot(aes(x = deg_nn_dist, y = sensitivity_mu)) + 
+  geom_point() + 
+  geom_smooth(method="lm") + 
+  xlab("Distance of nearest neighbor") + 
+  ylab("Raw sensitivity")
+```
+
+## Localization Error
+
+
+```{r}
+
+# bins from panel B (visually estimated)
+panel_bins = c(1.0, 1.4, 1.7, 2.1, 2.6, 3.6)
+# breaks = c(.32, 1.2, 1.55, 1.9, 2.35, 3.1, 4.0)
+breaks = c(.8, 1.2, 1.55, 1.9, 2.35, 3.1, 4.0)
+# breaks =c(0, .75, 1.25, 1.75, 2.25, 2.75, 4)
+
+loc_error <- exp_data %>%
+  select(scene, frame, tracker, deg_nn_dist, deg_loc_error, cycles_mu)
+
+# loc_error$bin <-cut(loc_error$deg_nn_dist, breaks = breaks)
+loc_error$bin <- cut_interval(loc_error$cycles_mu, n = 6)
+
+loc_error <- loc_error %>%
+  filter(!is.na(bin))
+
+loc_error %>%
+  group_by(bin) %>%
+  summarise(n = n())
+
+loc_error %>%
+  group_by(bin) %>%
+  summarise(le_mu = mean(deg_loc_error),
+            le_se = sd(deg_loc_error) / sqrt(n())) %>%
+  ggplot(aes(x = bin, y = le_mu)) + 
+  geom_point() + 
+  geom_errorbar(aes(ymin = le_mu - le_se,
+                    ymax = le_mu + le_se)) + 
+  xlab("Nearest Distractor") + 
+  ylab("Localization error")
+
+loc_error %>%
+  ggplot(aes(x = deg_nn_dist, y = cycles_mu)) + 
+  geom_point() +
+  geom_smooth(method="lm") + 
+  xlab("Cycles") + 
+  ylab("Localization error")
+
+loc_error %>%
+  ggplot(aes(x = deg_loc_error)) + 
+  geom_histogram(bins = 50) + 
+  xlim(0, 4)
+
+loc_error %>%
+  ggplot(aes(x = deg_nn_dist)) + 
+  geom_histogram(bins=30) +
+  xlim(0, 4)
+
+```

@@ -12,6 +12,9 @@ header-includes:
  \usepackage{wrapfig}
  \usepackage{float}
  \floatplacement{figure}{H}
+editor_options: 
+  markdown: 
+    wrap: 72
 ---
 
 # Setup
@@ -31,12 +34,11 @@ theme_set(th)
 
 load data (subject, exp, scenes)
 
-
 ## Model and Design data
 
 > TODO: look at mode of predicted assignment
 
-Loading non-subject data 
+Loading non-subject data
 
 ```{r echo=FALSE, results='hide'}
 
@@ -51,88 +53,13 @@ probe_timings <- read_csv("../data/exp2/exp2_probe_map_random.csv") %>%
   mutate(epoch = dense_rank(frame)) %>%
   ungroup()
 
-# TODO rename - Mario 11/03/2022
-# contains tracker id for each probe - not using eccentricity data
-# # scene, frame, tracker, eccentricity...
-probe_tracker_data <- read_csv("../data/exp2/exp2_probe_map_random_eccentricity.csv") %>%
-  filter(scene <= 40) %>%
-  select(scene, frame, tracker)
-
-# accuracy per tracker
-# scene, tracker, acc, chain
-# model_perf <- read_csv("../data/exp2/11_11_2022_exp2_probes_target_designation_perf.csv") %>%
-model_perf <- read_csv("../data/exp2/exp2_probes_target_designation_perf.csv") %>%
-  group_by(scene, tracker) %>%
-  summarise(across(td_acc, list(mu = mean, sd = sd)))
-
-# cycles per frame
-# scene, frame, tracker, cycles, chain
-# model_att <- read_csv("../data/exp2/11_11_2022_exp2_probes_target_designation_att.csv")
-model_att <- read_csv("../data/exp2/exp2_probes_target_designation_att.csv")
-
-# distance to nearest distractor
-# (not possible to extract directly from model predictions)
-dnd_predictions <- read_csv("../data/exp2/exp2_probes_dnd.csv") %>%
-  select(scene, frame, d_ic) %>%
-  rename(dist_to_nd = d_ic)
-
-```
-
-```{r results='hide'}
-
-model_smoothing = 48.0
-# add smoothing
-inf_data <- model_att %>%
-  group_by(chain, scene, tracker) %>%
-   # add smoothing
-  nest_by() %>%
-  mutate(att_xy = list(with(data,
-                        ksmooth(frame, importance, kernel = "normal",
-                                  bandwidth = model_smoothing))),
-         pred_xs = list(with(data,
-                        ksmooth(frame, pred_x, kernel = "normal",
-                                  bandwidth = model_smoothing))),
-         pred_ys = list(with(data,
-                        ksmooth(frame, pred_y, kernel = "normal",
-                                  bandwidth = model_smoothing)))) %>%
-  mutate(importance_smoothed = list(att_xy$y),
-         pred_x_smoothed = list(pred_xs$y),
-         pred_y_smoothed = list(pred_ys$y)) %>%
-  unnest(cols = c(data, importance_smoothed, pred_x_smoothed, pred_y_smoothed)) %>%
-  dplyr::select(-c(att_xy, pred_xs, pred_ys)) %>%
-  ungroup()
-  
-centroids <- inf_data %>%
-  group_by(scene, chain, frame) %>%
-  summarise(total_cycles = sum(cycles),
-            weighted_x = sum(pred_x_smoothed * importance_smoothed),
-            weighted_y = sum(pred_y_smoothed * importance_smoothed),
-            geo_x = mean(pred_x_smoothed),
-            geo_y = mean(pred_y_smoothed)) %>%
-  ungroup()
-
-# add distance to weighted and unweighted tracker means
-inf_data <- inf_data %>%
-  left_join(centroids, by = c("scene", "chain", "frame")) %>%
-  mutate(a3_centroid = sqrt((weighted_x - pred_x)^2 + (weighted_y - pred_y)^2),
-         geo_centroid = sqrt((geo_x - pred_x)^2 + (geo_y - pred_y)^2),
-         dist_to_center = sqrt(pred_x^2 + pred_y^2),
-         # con_centroid = sqrt((con_x - pred_x)^2 + (con_y - pred_y)^2)
-         ) %>%
-  group_by(scene, frame, tracker) %>%
-  summarise(across(-chain, list(mu = mean, sd = sd))) %>%
-  ungroup()
-
-# merge all covariates
-exp_data <- probe_tracker_data %>%
-  left_join(inf_data, by = c("scene", "frame", "tracker")) %>%
-  left_join(dnd_predictions, by = c("scene", "frame"))
+# covariates pre-processed by `scripts/exp1_attention_process_chains.R`
+exp_data <- read_csv("../data/exp2/model_probe_covariates.csv")
 ```
 
 ## Subject Data
 
 screen bad subjects
-
 
 ```{r echo=TRUE, results='hide'}
 subject_data <- read_csv("../data/exp2/parsed_trials_exp2_random_probes.csv") %>%
@@ -151,9 +78,6 @@ with_probes <- subject_data %>%
          fp = between(delta_t, hit_window+1, probe_space)) %>%
   ungroup()
 ```
-
-
-
 
 ```{r}
 hr_by_subj_scene <- with_probes %>%
@@ -187,6 +111,10 @@ td_by_subj_scene <- td_by_subj_tracker %>%
   group_by(ID, scene) %>%
   summarise(td = mean(td))
 
+td_by_scene <- td_by_subj_scene %>%
+  group_by(scene) %>%
+  summarise(td = mean(td))
+
 td_by_subj <- td_by_subj_tracker %>%
   group_by(ID) %>%
   summarise(td_acc_mu = mean(td),
@@ -215,18 +143,15 @@ n_passed = sum(subject_performance$passed)
 
 # Analysis
 
-
-
 ## Causal effects
 
 First collect all data points (no averaging across scene)
 
-The the average treatment effect, ATE, is indentified over attention on probe detection
-regardless of target designation accuracy.
+The the average treatment effect, ATE, is indentified over attention on
+probe detection regardless of target designation accuracy.
 
-The condititional average treatement effect, CATE, is the ATE conditioned on
-correct (4/4) target designation.
-
+The condititional average treatement effect, CATE, is the ATE
+conditioned on correct (4/4) target designation.
 
 ```{r}
 hr_by_probe <- good_subjects_data %>%
@@ -245,10 +170,16 @@ hr_by_probe <- good_subjects_data %>%
             rt = mean(delta_t),
             n = n()) %>%
   ungroup() %>%
-  rename(frame = probe) 
+  rename(frame = probe)
+
+importance_df <- exp_data %>%
+  group_by(scene, epoch) %>%
+  summarise(spatial_importance = sum(importance_weighted_mu))
 
 ate_by_probe <- exp_data %>%
-  left_join(hr_by_probe, by = c("scene", "frame", "tracker")) %>%
+  filter(tracker == probed_tracker) %>%
+  left_join(importance_df, by = c("scene", "epoch")) %>%
+  left_join(hr_by_probe, by = c("scene", "frame", "epoch", "tracker")) %>%
   mutate(hr = ifelse(is.na(hr), 0, hr)) %>%
   group_by(scene) %>%
   mutate(a3_centroid_rank = rank(a3_centroid_mu),
@@ -258,83 +189,58 @@ ate_by_probe <- exp_data %>%
 ```
 
 
-
-## Sanity checks for scene level variation
-
 ```{r}
-
-ate_by_probe %>%
-  ggplot(aes(hr, fill = factor(scene))) +
-  geom_histogram() +
-  guides(color = FALSE)
-
-ate_by_probe %>%
-  summarise(acc = mean(td))
-model_perf %>%
-  ungroup() %>%
-  summarise(a.cc = mean(td_acc_mu))
-```
-
-
-Focusing on specific scene
-
-```{r}
-spec_scene = c(24, 40)
-
-
-timing_data <- good_subjects_data %>%
-  ungroup() %>%
-  filter(scene %in% spec_scene) %>%
-  nest_by(ID) %>%
-  mutate(idata = list(filter(inf_data, scene %in% spec_scene)),
-         full = list(left_join(idata, data, by = c("scene", "frame")))) %>%
-  select(-c(data, idata)) %>%
-  unnest(cols = full) %>%
-  select(scene, frame, tracker, a3_centroid_mu, a3_centroid_sd, probe, ID, response_frame) %>%
-  ungroup()
-
-timing_data %>%
-  ggplot(aes(x = frame)) +
-  geom_line(aes(y = a3_centroid_mu, color = factor(tracker))) +
-  geom_ribbon(aes(ymin = a3_centroid_mu-a3_centroid_sd, 
-                  ymax=a3_centroid_mu+a3_centroid_sd, 
-                  color = factor(tracker)),
-              alpha = 0.2) +
-  geom_vline(aes(xintercept = probe, color = "probe_onset"), linetype = "dashed") + 
-  geom_histogram(aes(x =  response_frame), binwidth = 6) +
-  facet_grid(rows = vars(scene))
-
-ate_by_probe %>% filter(scene == 40) %>% select(scene, frame, tracker, hr, a3_centroid_mu, geo_centroid_mu)
-```
-
-
-```{r}
-ate_by_probe %>%
-  group_by(epoch) %>%
-  summarise(hr = mean(hr)) %>%
-  ggplot(aes(x = epoch, y = hr)) +
-  geom_col()
-
 subject_performance %>%
   filter(passed) %>%
   ggplot(aes(x = factor(ID), y = hr - fp)) +
   geom_col()
 ```
 
-
 ## Predicting probe hit rate with univariate models
 
+Here, we evaluate the ability of each model (adaptive computation as
+well as several heuristics models) to predict probe hit rate.
 
-Here, we evaluate the ability of each model (adaptive computation as well as several heuristics models)
-to predict probe hit rate. 
+In general this is accomplished by computing a "center of attention" and
+using... TODO
 
-In general this is accomplished by computing a "center of attention" and using... TODO
 ```{r Covariates on hit rate}
 
 ate_by_probe %>%
-  ggplot(aes(x = a3_centroid_mu, y = hr)) +
+  ggplot(aes(x = sensitivity_smoothed_mu, y = hr)) +
   geom_point(color = "#5aa67b", size = 3.1) + 
   geom_smooth(method = "lm", color = "black") +
+  theme_classic() +
+  ggtitle("HR ~ Raw sensitivity")
+
+ate_by_probe %>%
+  ggplot(aes(x = spatial_importance, y = hr)) +
+  geom_point(color = "#5aa67b", size = 3.1) + 
+  geom_smooth(method = "lm", color = "black") +
+  theme_classic() +
+  ggtitle("HR ~ Spatial importance")
+
+
+ate_by_probe %>%
+  ggplot(aes(y = spatial_importance, x = a3_centroid_mu,
+             label = paste(scene, frame, tracker),
+             color = cycles_smoothed_mu)) +
+  geom_point(size = 3.1,
+             # color = "#5aa67b", 
+             ) + 
+  geom_smooth(method = "lm", color = "black") +
+  geom_text(hjust=0, vjust=0) +
+  theme_classic()
+
+ate_by_probe %>%
+  ggplot(aes(x = a3_centroid_mu, y = hr,
+             label = paste(scene, frame, tracker),
+             color = cycles_smoothed_mu)) +
+  geom_point(size = 3.1,
+             # color = "#5aa67b", 
+             ) + 
+  geom_smooth(method = "lm", color = "black") +
+  geom_text(hjust=0, vjust=0) +
   theme_classic() +
   ggtitle("HR ~ Attention Centroid")
 
@@ -354,10 +260,28 @@ ate_by_probe %>%
   ggtitle("HR ~ Origin")
 ```
 
-Linear model fitting and bootstrap analysis 
-
+Linear model fitting and bootstrap analysis
 
 ```{r Univariate linear fits}
+
+ate_by_probe %>%
+  with(lm(a3_centroid_mu ~ spatial_importance,)) %>%
+summary()
+
+print("Raw importance")
+ate_by_probe %>%
+  with(lm(hr ~ importance_smoothed_mu,)) %>%
+summary()
+
+print("Raw sensitivity")
+ate_by_probe %>%
+  with(lm(hr ~ sensitivity_smoothed_mu,)) %>%
+  summary()
+
+print("Spatial Importannce")
+ate_by_probe %>%
+  with(lm(hr ~ spatial_importance,)) %>%
+  summary()
 
 print("Adaptive computation centroid")
 ate_by_probe %>%
@@ -380,6 +304,7 @@ ate_by_probe %>%
   with(lm(hr ~ dist_to_center_mu,)) %>%
   summary()
 ```
+
 ```{r Fig 2C}
 ate_by_probe %>%
   ggplot(aes(x = a3_centroid_mu, y = hr)) +
@@ -393,7 +318,6 @@ ate_by_probe %>%
           # aspect.ratio = 1
           )
 ```
-
 
 ```{r Univariate boot strap test}
 set.seed(0)
@@ -414,7 +338,6 @@ univariate_test <- function(data, indices) {
 
 univ_boostrap_steps = 10000
 ```
-
 
 ```{r univariate bootstraps}
 reps <- boot(data=ate_by_probe, 
@@ -440,15 +363,13 @@ univ_cis_hr_or <- boot.ci(reps, type="perc", index=4) # or
 univ_cis_hr_or$mu <- mean(reps$t[,4])
 ```
 
-
 ## Comparing models
-
 
 ### Direct bootstrapped hypothesis testing
 
-The test uses a random sample of subjects (with replacement) to measure the
-frequency of the attention centroid producing a higher absolute correlation
-to a given heuristic model.
+The test uses a random sample of subjects (with replacement) to measure
+the frequency of the attention centroid producing a higher absolute
+correlation to a given heuristic model.
 
 ```{r test definition}
 dbht_function <- function(data, indices) {
@@ -466,7 +387,6 @@ dbht_function <- function(data, indices) {
 
 dbht_steps = 10000
 ```
-
 
 ```{r Attention centroid vs heuristics}
 set.seed(0)
@@ -486,8 +406,8 @@ dbht_or_p_val = 1.0 - (sum(reps$t[, 3]) / reps$R)
 dbht_or_p_val
 ```
 
-Computing subject split half correlation (r-squared) to define upper threshold
-of explainable variance by each model.
+Computing subject split half correlation (r-squared) to define upper
+threshold of explainable variance by each model.
 
 ```{r  split half correlation}
 subj_data_nested <- good_subjects_data %>%
@@ -553,33 +473,53 @@ shc_probe_hr_ci$mu <- mean(reps$t)
 <!-- ```{r  Leave one out analysis} -->
 
 <!-- leave_one_out_test <- function(data, indices) { -->
+
 <!--   d <- data.frame(data) -->
+
 <!--   nr = length(indices) -->
+
 <!--   all_but_one = indices[2:nr] -->
+
 <!--   the_one = indices[1:1] -->
+
 <!--   group_a <- group_perf(d[all_but_one,], "a") -->
+
 <!--   group_b <- group_perf(d[the_one,], "b") -->
+
 <!--   df <- rbind(group_a, group_b) %>% -->
+
 <!--     pivot_wider(names_from = g, -->
+
 <!--                 values_from = hr) -->
+
 <!--   fit <- df %>% with(lm(b ~ a)) %>% summary -->
+
 <!--   return (fit$r.square) -->
+
 <!-- } -->
+
 <!-- reps <- boot(data = subj_data_nested,  -->
+
 <!--              statistic=leave_one_out_test, -->
+
 <!--              sim = "permutation", -->
+
 <!--              R=5000, -->
+
 <!--              ncpus = 8,  -->
+
 <!--              parallel = "multicore") -->
+
 <!-- loo_plot <- plot(reps) -->
+
 <!-- loo_probe_hr_ci <- boot.ci(reps, type="bca") -->
+
 <!-- loo_probe_hr_ci$mu <- mean(reps$t) -->
+
 <!-- ``` -->
 
-
-Across all comparisons, the attention centroid forms a stronger correlation
-to probe hit rate (p < .001).
-
+Across all comparisons, the attention centroid forms a stronger
+correlation to probe hit rate (p \< .001).
 
 ```{r Fig 2D-i}
 
@@ -607,8 +547,8 @@ univ_fig <- function() {
     ggplot(aes(x = reorder(model, -conf.high), y = r.squared, fill = heuristic)) + 
     geom_col(width = 0.5, position = position_dodge(width = 0.9)) +
     geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.075, size = 0.7) +
-    geom_hline(aes(yintercept = yintercept), 
-               linetype = "dashed") +
+    # geom_hline(aes(yintercept = yintercept), 
+    #            linetype = "dashed") +
     ylim(0., 0.8) +
     theme(legend.position = "none",
           axis.title = element_blank(),
@@ -793,8 +733,6 @@ withr::with_options(
 
 ### Probe detection
 
-
-
 ### Target designation
 
 ```{r}
@@ -866,4 +804,3 @@ plot(reps)
 boot.ci(reps, type="bca")
 mean(reps$t)
 ```
-

@@ -1,0 +1,125 @@
+---
+title: "Exp 3: Model simulations"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+header-includes:
+ \usepackage{booktabs}
+ \usepackage{longtable}
+ \usepackage{array}
+ \usepackage{multirow}
+ \usepackage{wrapfig}
+ \usepackage{float}
+ \floatplacement{figure}{H}
+---
+
+# Setup
+
+```{r , include=FALSE}
+knitr::opts_chunk$set(fig.pos = 'H', 
+                      echo=TRUE, warning=FALSE, message=FALSE)
+
+library(tidyverse)
+library(ggplot2)
+library(readr)
+library(boot)
+
+th <- theme_classic()
+theme_set(th)
+```
+
+load data (subject, exp, scenes)
+
+
+## Model and Design data
+
+```{r echo=FALSE, results='hide'}
+
+# <scene> | <ntargets> | <vel> 
+# exp_design <- read_csv("../data/exp3/exp_design.csv")
+
+
+model_att <- read_csv("../data/exp3/exp3_staircase_adaptive_computation_td_att.csv") %>%
+  group_by(chain, ntargets, vel) %>%
+  summarise(total_cycles = sum(cycles)) %>%
+  group_by(ntargets, vel) %>%
+  summarise(total_cycles_avg = mean(total_cycles))
+
+model_perf <- read_csv("../data/exp3/exp3_staircase_adaptive_computation_td_perf.csv") %>%
+  # avg across chain and tracker id
+  group_by(chain, ntargets, vel) %>%
+  summarise(td_avg = mean(td_acc),
+            ntargets = n(),
+            chance_level = ntargets / 12,
+            above_chance = td_avg > chance_level) 
+
+```
+
+## Perfomance threshold
+
+
+```{r histogram}
+
+nt_breaks = unique(model_perf$ntargets)
+vel_breaks = unique(model_perf$vel)
+breaks = list(x = nt_breaks, y = vel_breaks)
+
+model_perf_by_design <- model_perf %>%
+  group_by(ntargets, vel) %>%
+  summarise(prop_above_chance = mean(above_chance),
+            td_avg = mean(td_avg)) %>%
+  left_join(model_att)
+
+
+
+
+model_perf_by_design %>%
+  ggplot(aes(y=vel, x=ntargets, z=td_avg)) +
+  stat_summary_2d(breaks=breaks) + 
+  xlab("Number of targets") + 
+  ylab("Object velocity")
+
+model_perf_by_design %>%
+  ggplot(aes(y=vel, x=ntargets, z=total_cycles_avg)) +
+  stat_summary_2d(breaks=breaks) + 
+  xlab("Number of targets") + 
+  ylab("Object velocity")
+```
+```{r}
+
+
+model_perf_by_design %>%
+  ungroup() %>%
+  filter(td_avg > 0.5) %>%
+  group_by(ntargets) %>%
+  summarise(vel_mu = mean(vel),
+            vel_sd = sd(vel),
+            n = n(),
+            se = vel_sd / sqrt(n)) %>%
+  ggplot(aes(x = ntargets, y = vel_mu)) + 
+  geom_line() + 
+  geom_errorbar(aes(ymin = vel_mu - se,
+                    ymax = vel_mu + se)) + 
+  xlab("Number of targets") + 
+  ylab("Velocity Threshold") + 
+  ggtitle("Staircase for velocity threshold")
+
+
+model_perf %>%
+  group_by(chain, ntargets) %>%
+  summarise(vel_threshold = max(vel)) %>%
+  group_by(ntargets) %>%
+  summarise(thresh_avg = mean(vel_threshold),
+            thresh_sd = sd(vel_threshold),
+            thresh_se = thresh_sd / sqrt(n())) %>%
+  ggplot(aes(x = ntargets, y = thresh_avg)) + 
+  geom_line() + 
+  geom_point() + 
+  geom_errorbar(aes(ymin = thresh_avg - thresh_se,
+                    ymax = thresh_avg + thresh_se)) + 
+  xlab("Number of targets") + 
+  ylab("Velocity Threshold") + 
+  ggtitle("Staircase for velocity threshold")
+
+```
