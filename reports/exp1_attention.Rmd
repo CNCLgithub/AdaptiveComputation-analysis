@@ -55,6 +55,10 @@ probe_timings <- read_csv("../data/exp2/exp2_probe_map_random.csv") %>%
 
 # covariates pre-processed by `scripts/exp1_attention_process_chains.R`
 exp_data <- read_csv("../data/exp2/model_probe_covariates.csv")
+
+model_perf <- read_csv("../data/exp2/exp2_probes_adaptive_computation_eu_perf.csv") %>%
+  group_by(scene) %>%
+  summarise(td = mean(td_acc))
 ```
 
 ## Subject Data
@@ -66,7 +70,7 @@ subject_data <- read_csv("../data/exp2/parsed_trials_exp2_random_probes.csv") %>
   select(-c(WID)) %>%
   replace_na(list(response_frame = Inf))
 
-hit_window = 48 # subjects hit if response 1.5s after probe onset
+hit_window = 48 # subjects hit if response 2s after probe onset
 probe_space = 60 # 2.5 seconds between probes
 with_probes <- subject_data %>%
   nest_by(ID) %>%
@@ -119,13 +123,12 @@ td_by_subj <- td_by_subj_tracker %>%
   group_by(ID) %>%
   summarise(td_acc_mu = mean(td),
             n = n(),
-            td_acc_se = sd(td) / sqrt(n)) 
+        td_acc_se = sd(td) / sqrt(40)) 
 
-perf_thresh = 2.5
+perf_thresh = 3.0
 subject_performance <- td_by_subj %>%
   left_join(probe_by_subj) %>%
-  mutate(passed = (td_acc_mu - 0.5) > perf_thresh*td_acc_se & (hr - fp > 0.05),
-         high_perf = hr - fp > 0.4)
+  mutate(passed = (td_acc_mu - 0.5) > perf_thresh*td_acc_se & (hr - fp > 0.05))
 
 good_subjects_data <- subject_performance %>%
   filter(passed) %>%
@@ -154,6 +157,7 @@ The condititional average treatement effect, CATE, is the ATE
 conditioned on correct (4/4) target designation.
 
 ```{r}
+
 hr_by_probe <- good_subjects_data %>%
   # sorting out probed tracker
   pivot_longer(cols = starts_with("probe_"), 
@@ -161,9 +165,10 @@ hr_by_probe <- good_subjects_data %>%
                values_to = "tracker") %>%
   separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
   mutate(probed_tracker_epoch = as.numeric(probed_tracker_epoch)) %>%
-  group_by(ID, scene, probe, epoch, probed_tracker_epoch, tracker) %>%
-  filter(probed_tracker_epoch == epoch, hit | fp) %>%
-  ungroup() %>%
+  filter(probed_tracker_epoch == epoch & (hit | fp)) %>%
+  select(-c(hr)) %>%
+  # left_join(td_by_subj_tracker, by = c("ID", "scene", "tracker")) %>%
+  # filter(td) %>%
   group_by(scene, epoch, probe, tracker) %>%
   summarise(hr = sum(hit) / n_passed,
             td = mean(td),
@@ -194,6 +199,10 @@ subject_performance %>%
   filter(passed) %>%
   ggplot(aes(x = factor(ID), y = hr - fp)) +
   geom_col()
+
+model_perf %>%
+  mutate(model_td = td) %>%
+  left_join(td_by_scene)
 ```
 
 ## Predicting probe hit rate with univariate models
@@ -206,12 +215,34 @@ using... TODO
 
 ```{r Covariates on hit rate}
 
+# ate_by_probe %>%
+#   ggplot(aes(x = sensitivity_smoothed_mu, y = hr)) +
+#   geom_point(color = "#5aa67b", size = 3.1) + 
+#   geom_smooth(method = "lm", color = "black") +
+#   theme_classic() +
+#   ggtitle("HR ~ Raw sensitivity")
+
+
+leg_ate_by_probe <- read_csv("~/project/data/exp2/10_2022_ate-by-probe.csv") %>%
+  select(scene, frame, a3_centroid_mu, importance_smoothed_mu) %>%
+  rename(leg_a3_centroid = a3_centroid_mu,
+         leg_importance_smoothed = importance_smoothed_mu)
+
+
 ate_by_probe %>%
-  ggplot(aes(x = sensitivity_smoothed_mu, y = hr)) +
-  geom_point(color = "#5aa67b", size = 3.1) + 
-  geom_smooth(method = "lm", color = "black") +
-  theme_classic() +
-  ggtitle("HR ~ Raw sensitivity")
+  left_join(leg_ate_by_probe) %>%
+  ggplot(aes(x = importance_smoothed_mu, y = leg_importance_smoothed,
+             label = paste(scene, frame, tracker))) +
+  geom_point() + 
+  geom_text(hjust=0, vjust=0)
+
+ate_by_probe %>%
+  left_join(leg_ate_by_probe) %>%
+  ggplot(aes(x = paste(scene, frame, tracker), y = a3_centroid_mu - leg_a3_centroid,
+             label = paste(scene, frame, tracker))) +
+  geom_point() + 
+  geom_text(hjust=0, vjust=0)
+  
 
 ate_by_probe %>%
   ggplot(aes(x = spatial_importance, y = hr)) +
@@ -222,9 +253,8 @@ ate_by_probe %>%
 
 
 ate_by_probe %>%
-  ggplot(aes(y = spatial_importance, x = a3_centroid_mu,
-             label = paste(scene, frame, tracker),
-             color = cycles_smoothed_mu)) +
+  ggplot(aes(y = hr, x = cycles_smoothed_mu,
+             label = paste(scene, frame, tracker))) +
   geom_point(size = 3.1,
              # color = "#5aa67b", 
              ) + 
@@ -234,8 +264,7 @@ ate_by_probe %>%
 
 ate_by_probe %>%
   ggplot(aes(x = a3_centroid_mu, y = hr,
-             label = paste(scene, frame, tracker),
-             color = cycles_smoothed_mu)) +
+             label = paste(scene, frame, tracker))) +
   geom_point(size = 3.1,
              # color = "#5aa67b", 
              ) + 
@@ -247,6 +276,7 @@ ate_by_probe %>%
 ate_by_probe %>%
   ggplot(aes(x = geo_centroid_mu, y = hr)) +
   geom_point() + 
+  geom_smooth(method="lm")
   ggtitle("HR ~ Target Center")
 
 ate_by_probe %>%
@@ -272,11 +302,11 @@ print("Raw importance")
 ate_by_probe %>%
   with(lm(hr ~ importance_smoothed_mu,)) %>%
 summary()
-
-print("Raw sensitivity")
-ate_by_probe %>%
-  with(lm(hr ~ sensitivity_smoothed_mu,)) %>%
-  summary()
+# 
+# print("Raw sensitivity")
+# ate_by_probe %>%
+#   with(lm(hr ~ sensitivity_smoothed_mu,)) %>%
+#   summary()
 
 print("Spatial Importannce")
 ate_by_probe %>%
@@ -379,7 +409,7 @@ dbht_function <- function(data, indices) {
   tc_r <- cor.test(~ hr + geo_centroid_mu, data = d)
   nd_r <- cor.test(~ hr + dist_to_nd, data = d)
   or_r <- cor.test(~ hr + dist_to_center_mu, data = d)
-  result <- c(abs(ac_r$estimate) > abs(tc_r$estimate),
+result <- c(abs(ac_r$estimate) > abs(tc_r$estimate),
               abs(ac_r$estimate) > abs(nd_r$estimate),
               abs(ac_r$estimate) > abs(or_r$estimate))
   return(result)
@@ -422,7 +452,7 @@ subj_data_nested <- good_subjects_data %>%
   filter(probed_tracker_epoch == epoch, hit | fp) %>%
   ungroup() %>%
   select(ID, scene, epoch, probe, tracker, probed_tracker_epoch, hit) %>%
-nest_by(ID)
+  nest_by(ID)
 
 group_perf <- function(group, gname) {
   k = nrow(group)
@@ -433,9 +463,10 @@ group_perf <- function(group, gname) {
               .groups = "keep",) %>%
     ungroup %>%
     mutate(frame = probe)
-
-  result <- exp_data %>%
-    left_join(d, by = c("scene", "frame", "tracker")) %>%
+  
+  result <- probe_timings %>%
+    select(scene, frame) %>%
+    left_join(d, by = c("scene", "frame")) %>%
     mutate(hr = ifelse(is.na(hr), 0, hr)) %>%
     select(scene, frame, hr) %>%
     mutate(g = gname)
@@ -462,8 +493,9 @@ reps <- boot(data = subj_data_nested,
              statistic=split_half_cor,
              sim = "permutation",
              R=5000,
-             ncpus = 8, 
-             parallel = "multicore")
+             ncpus = 8,
+             parallel = "multicore",
+             )
 shc_plot <- plot(reps)
 shc_probe_hr_ci <- boot.ci(reps, type="all")
 shc_probe_hr_ci
@@ -529,11 +561,11 @@ fig2di_df <- data.frame(
                 univ_cis_hr_tc$mu,
                 univ_cis_hr_nd$mu,
                 univ_cis_hr_or$mu),
-  conf.low = c(univ_cis_hr_ac$perc[4], 
+  conf.low = c(univ_cis_hr_ac$perc[4],
                univ_cis_hr_tc$perc[4],
                univ_cis_hr_nd$perc[4],
                univ_cis_hr_or$perc[4]),
-  conf.high= c(univ_cis_hr_ac$perc[5], 
+  conf.high= c(univ_cis_hr_ac$perc[5],
                univ_cis_hr_tc$perc[5],
                univ_cis_hr_nd$perc[5],
                univ_cis_hr_or$perc[5]),
@@ -551,7 +583,7 @@ univ_fig <- function() {
     #            linetype = "dashed") +
     ylim(0., 0.8) +
     theme(legend.position = "none",
-          axis.title = element_blank(),
+        axis.title = element_blank(),
           # axis.text = element_blank(),
           aspect.ratio = 1
           )
@@ -691,8 +723,8 @@ ac_vs_or_pval
 ```{r Fig 2D-ii}
 
 resid_results %>%
-filter(model == "ac") %>%
-ggplot(aes(x = reorder(covariate, r.squared), y = r.squared)) + 
+  filter(model == "ac") %>%
+  ggplot(aes(x = reorder(covariate, r.squared), y = r.squared)) + 
   geom_col(width = 0.5, fill = "#5aa67b")+
   geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.075, size = 0.7) + 
   ylim(0., 0.8) +
@@ -801,6 +833,6 @@ reps <- boot(data = subj_data_nested,
              ncpus = 8, 
              parallel = "multicore")
 plot(reps)
-boot.ci(reps, type="bca")
+boot.ci(reps, type="all")
 mean(reps$t)
 ```

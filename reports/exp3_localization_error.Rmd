@@ -36,44 +36,106 @@ load data (subject, exp, scenes)
 
 ```{r echo=FALSE, results='hide'}
 
-# scene, frame
-probe_timings <- read_csv("../data/exp2/exp2_probe_map_random.csv") %>%
-  filter(scene <= 40) %>%
-  group_by(scene, frame) %>%
-  summarise() %>%
-  ungroup() %>%
-  mutate(probe = frame) %>%
-  group_by(scene) %>%
-  mutate(epoch = dense_rank(frame)) %>%
-  ungroup()
-
 # covariates pre-processed by `scripts/exp1_attention_process_chains.R`
-exp_data <- read_csv("../data/exp2/model_probe_covariates.csv") %>%
-  select(-dist_to_nd)
+exp_data <- read_csv("../data/exp3/exp3_localization_error_adaptive_computation_td_att.csv") %>%
+filter(frame > 24)
 
-dnd_data <- read_csv("../data/exp2/exp2_probes_adaptive_computation_td_dnd.csv") %>%
+dnd_data <- read_csv("../data/exp3/exp3_localization_error_adaptive_computation_td_dnd.csv") %>%
+# filter(frame == max(frame)) %>%
   select(-contains("pred"))
 
+model_perf <- read_csv("../data/exp3/exp3_localization_error_adaptive_computation_td_perf.csv")
+
+# loc_error_thresh = 3.0
+# ecc_thresh = 0.9
+# exp_data <- exp_data %>%
+#   left_join(model_perf, by = c("chain", "scene", "tracker")) %>%
+#   # remove targets that were not correctly tracked
+#   left_join(dnd_data, by = c("chain", "scene", "frame", "tracker")) %>%
+#   group_by(scene, frame, tracker) %>%
+#   summarise(across(c(cycles, pred_x, pred_y, pred_x_sd, pred_y_sd, loc_error, nn_dist, td_acc),
+#                    list(mean = mean))) %>%
+#   # filter(td_acc_mean > 0.95) %>%
+#   # remove extreme loc error
+#   # mutate(z_loc_error = scale(loc_error_mean)) %>%
+#   # filter(z_loc_error < loc_error_thresh) %>%
+#   mutate(deg_loc_error = (loc_error_mean / 800) * 6.97,
+#          deg_nn_dist = (nn_dist_mean / 800) * 6.97,
+#          ecc = sqrt(pred_x_mean^2 + pred_y_mean^2) / 400) 
+# %>%
+  # filter(ecc < ecc_thresh)
+
+
+acc_thresh = 0.99
+loc_error_thresh = 3.0
+ecc_thresh = 0.99
 exp_data <- exp_data %>%
-  left_join(dnd_data, by = c("scene", "frame", "tracker")) %>%
+  mutate(sensitivity = pmax(sensitivity, -100)) %>%
+  left_join(model_perf, by = c("chain", "scene", "tracker")) %>%
+# remove targets that were not correctly tracked
+  # filter(td_acc > 0.99) %>%
+  left_join(dnd_data, by = c("chain", "scene", "frame", "tracker")) %>%
+  group_by(scene, frame, tracker) %>%
+  summarise(across(c(cycles, pred_x, pred_y, loc_error, nn_dist, td_acc, sensitivity),
+                   list(mean = mean)),
+            )%>%
+  filter(td_acc_mean > acc_thresh) %>%
+  # remove extreme loc error
+  mutate(z_loc_error = scale(loc_error_mean)) %>%
+  filter(z_loc_error < loc_error_thresh) %>%
   mutate(deg_loc_error = (loc_error_mean / 800) * 6.97,
-         deg_nn_dist = (nn_dist_mean / 800) * 6.97)
+         deg_nn_dist = (nn_dist_mean / 800) * 6.97,
+         ecc = sqrt(pred_x_mean^2 + pred_y_mean^2) / 400) %>%
+  filter(ecc < ecc_thresh)
+```
+
+## Localization Error
+```{r}
+
+exp_data %>%
+filter(scene == 4) %>%
+ggplot(aes(x = frame, y = deg_loc_error, color = factor(tracker))) + 
+geom_line()
+
+exp_data %>%
+filter(scene == 4) %>%
+ggplot(aes(x = frame, y = deg_nn_dist, color = factor(tracker))) + 
+geom_line()
+# 
+# 
+# exp_data %>%
+# filter(scene == 4) %>%
+# ggplot(aes(x = frame, y = pred_x_sd_mean, color = factor(tracker))) + 
+# geom_line()
+# 
 
 ```
-## Sanity checks
 
 ```{r}
 
 exp_data %>%
-  ggplot(aes(x = deg_nn_dist, y = sensitivity_mu)) + 
-  geom_point() + 
-  geom_smooth(method="lm") + 
-  xlab("Distance of nearest neighbor") + 
-  ylab("Raw sensitivity")
+  ggplot(aes(x = cycles_mean)) + 
+  geom_histogram(bins=100)
+
+
+loc_error <- exp_data %>%
+  select(scene, frame, tracker, deg_nn_dist, deg_loc_error, cycles_mean, 
+         sensitivity_mean)
+
+loc_error %>%
+  ggplot(aes(x = deg_nn_dist)) + 
+  geom_histogram(bins=30)
+
+loc_error %>%
+  ggplot(aes(x = deg_loc_error)) + 
+  geom_histogram(bins=100)
+
+loc_error %>%
+  ggplot(aes(x = sensitivity_mean, y = deg_nn_dist)) + 
+  geom_point()
+  # geom_hex()
+
 ```
-
-## Localization Error
-
 
 ```{r}
 
@@ -83,11 +145,9 @@ panel_bins = c(1.0, 1.4, 1.7, 2.1, 2.6, 3.6)
 breaks = c(.8, 1.2, 1.55, 1.9, 2.35, 3.1, 4.0)
 # breaks =c(0, .75, 1.25, 1.75, 2.25, 2.75, 4)
 
-loc_error <- exp_data %>%
-  select(scene, frame, tracker, deg_nn_dist, deg_loc_error, cycles_mu)
+loc_error$bin <-cut(loc_error$deg_nn_dist, breaks = breaks)
+# loc_error$bin <-cut_number(loc_error$deg_nn_dist, 6)
 
-# loc_error$bin <-cut(loc_error$deg_nn_dist, breaks = breaks)
-loc_error$bin <- cut_interval(loc_error$cycles_mu, n = 6)
 
 loc_error <- loc_error %>%
   filter(!is.na(bin))
@@ -99,29 +159,123 @@ loc_error %>%
 loc_error %>%
   group_by(bin) %>%
   summarise(le_mu = mean(deg_loc_error),
-            le_se = sd(deg_loc_error) / sqrt(n())) %>%
-  ggplot(aes(x = bin, y = le_mu)) + 
+            le_se = sd(deg_loc_error) / sqrt(n()),
+            x = mean(deg_nn_dist)) %>%
+  ungroup() %>%
+  ggplot(aes(x = x, y = le_mu)) + 
+  geom_point(color = "#5aa67b",) + 
+  geom_line(color = "#5aa67b",) +
+  geom_errorbar(aes(ymin = le_mu - le_se,
+                    ymax = le_mu + le_se),
+                color = "#5aa67b",
+                 ) + 
+  xlab("Deg. Nearest Distractor") + 
+  ylab("Deg. Localization error") +
+  theme(aspect.ratio = 1.75)
+
+loc_error %>%
+  ggplot(aes(x = deg_nn_dist, y = deg_loc_error)) + 
+  geom_point() +
+  geom_smooth(method="lm")
+
+
+```
+
+```{r}
+
+
+loc_error$bin <- cut_interval(loc_error$cycles_mean, n = 10)
+
+loc_error <- loc_error %>%
+  filter(!is.na(bin))
+
+loc_error %>%
+  group_by(bin) %>%
+  summarise(n = n())
+
+loc_error %>%
+  group_by(bin) %>%
+  summarise(le_mu = mean(deg_loc_error),
+            le_se = sd(deg_loc_error) / sqrt(n()),
+            x = mean(cycles_mean)) %>%
+  ggplot(aes(x = x, y = le_mu)) + 
+  geom_point(color = "#7a59a5",) + 
+  geom_line(color = "#7a59a5",) + 
+  geom_errorbar(aes(ymin = le_mu - le_se,
+                    ymax = le_mu + le_se),
+                color = "#7a59a5",) + 
+  xlab("Cycles") + 
+  ylab("Deg. Localization error") + 
+  theme(aspect.ratio = 1.75)
+
+loc_error %>%
+  ggplot(aes(x = cycles_mean, y = deg_loc_error)) + 
+  geom_point()
+  # geom_hex()
+
+
+```
+
+```{r}
+
+
+loc_error$bin <- cut_interval(loc_error$sensitivity_mean, n = 10)
+
+loc_error <- loc_error %>%
+  filter(!is.na(bin))
+
+loc_error %>%
+  group_by(bin) %>%
+  summarise(n = n())
+
+loc_error %>%
+  group_by(bin) %>%
+  summarise(le_mu = mean(deg_loc_error),
+            le_se = sd(deg_loc_error) / sqrt(n()),
+            x = mean(sensitivity_mean)) %>%
+  ggplot(aes(x = x, y = le_mu)) + 
+  geom_point(color="#a57a59") + 
+  geom_line(color="#a57a59") + 
+  geom_errorbar(aes(ymin = le_mu - le_se,
+                    ymax = le_mu + le_se),
+                color="#a57a59") + 
+  xlab("Sensitivity") + 
+  ylab("Deg. Localization error") + 
+  theme(aspect.ratio =1.75)
+
+loc_error %>%
+  ggplot(aes(x = sensitivity_mean, y = deg_loc_error)) + 
+  geom_point()
+
+
+```
+
+```{r}
+
+
+loc_error$bin <- cut_interval(loc_error$sensitivity_mean, n = 6)
+
+loc_error <- loc_error %>%
+  filter(!is.na(bin))
+
+loc_error %>%
+  group_by(bin) %>%
+  summarise(n = n())
+
+loc_error %>%
+  group_by(bin) %>%
+  summarise(le_mu = mean(deg_nn_dist),
+            le_se = sd(deg_nn_dist) / sqrt(n()),
+            x = mean(sensitivity_mean)) %>%
+  ggplot(aes(x = x, y = le_mu)) + 
   geom_point() + 
+  geom_line() + 
   geom_errorbar(aes(ymin = le_mu - le_se,
                     ymax = le_mu + le_se)) + 
-  xlab("Nearest Distractor") + 
-  ylab("Localization error")
+  xlab("Sensitivity") + 
+  ylab("Deg. Nearest Distractor") + 
+  theme(aspect.ratio = 1.75)
 
-loc_error %>%
-  ggplot(aes(x = deg_nn_dist, y = cycles_mu)) + 
-  geom_point() +
-  geom_smooth(method="lm") + 
-  xlab("Cycles") + 
-  ylab("Localization error")
 
-loc_error %>%
-  ggplot(aes(x = deg_loc_error)) + 
-  geom_histogram(bins = 50) + 
-  xlim(0, 4)
-
-loc_error %>%
-  ggplot(aes(x = deg_nn_dist)) + 
-  geom_histogram(bins=30) +
-  xlim(0, 4)
 
 ```

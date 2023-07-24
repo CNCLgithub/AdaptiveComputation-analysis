@@ -18,12 +18,12 @@ probe_timings <- read_csv("project/data/exp2/exp2_probe_map_random.csv") %>%
   ungroup() %>%
   rename(probed_tracker = tracker)
 
-# attention traces 
+# attention traces; processed from `mot/scripts/analysis/aggregate_chains.jl`
 # scene, frame, tracker, cycles, chain, ...,
+# model_att <- read_csv("project/data/exp2/exp2_probes_target_designation_att.csv")
 model_att <- read_csv("project/data/exp2/exp2_probes_adaptive_computation_td_att.csv")
-# model_att <- read_csv("project/data/exp2/exp2_probes_adaptive_computation_att.csv")
 
-# distance to nearest distractor
+# distance to nearest distractor; from `mot/scripts/analysis/nd_probes.jl`
 # (not possible to extract directly from model predictions)
 dnd_predictions <- read_csv("project/data/exp2/exp2_probes_adaptive_computation_td_dnd_centroid.csv") %>%
   select(scene, frame, d_ic) %>%
@@ -32,9 +32,9 @@ dnd_predictions <- read_csv("project/data/exp2/exp2_probes_adaptive_computation_
 ############################# smoothing kernel##################################
 smoothed_df <- model_att %>%
   # clean up -Inf sensitivity values
-  mutate(sensitivity = ifelse(is.infinite(sensitivity),
-                              min_sensitivity,
-                              sensitivity)) %>%
+  # mutate(sensitivity = ifelse(is.infinite(sensitivity),
+  #                             min_sensitivity,
+  #                             sensitivity)) %>%
   group_by(chain, scene, tracker) %>%
   # add smoothing
   nest_by() %>%
@@ -44,32 +44,46 @@ smoothed_df <- model_att %>%
        cycles_xy = list(with(data,
                                ksmooth(frame, cycles, kernel = "normal",
                                        bandwidth = model_smoothing))),
-         sens_xy = list(with(data,
-                             ksmooth(frame, sensitivity, kernel = "normal",
-                                     bandwidth = model_smoothing))),
-         ) %>%
+       pred_xs = list(with(data,
+                           ksmooth(frame, pred_x, kernel = "normal",
+                                   bandwidth = model_smoothing))),
+       pred_ys = list(with(data,
+                           ksmooth(frame, pred_y, kernel = "normal",
+                                   bandwidth = model_smoothing))),
+       
+         # sens_xy = list(with(data,
+         #                     ksmooth(frame, sensitivity, kernel = "normal",
+         #                             bandwidth = model_smoothing))),
+       ) %>%
   mutate(importance_smoothed = list(att_xy$y),
          cycles_smoothed = list(cycles_xy$y),
-         sensitivity_smoothed = list(sens_xy$y),
+         # sensitivity_smoothed = list(sens_xy$y),
+         pred_x_smoothed = list(pred_xs$y),
+         pred_y_smoothed = list(pred_ys$y),
          ) %>%
   unnest(cols = c(data, 
                   importance_smoothed, 
                   cycles_smoothed, 
-                  sensitivity_smoothed,
+                  # sensitivity_smoothed,
+                  pred_x_smoothed, pred_y_smoothed,
                   )) %>%
   dplyr::select(-c(att_xy, 
                    cycles_xy, 
-                   sens_xy,
+                   # sens_xy,
+                   pred_xs,
+                   pred_ys,
                    )) %>%
   ungroup()
 
 # extract probed frames
 smoothed_df <- probe_timings %>%
-left_join(smoothed_df, by = c("scene", "frame"))
+  left_join(smoothed_df, by = c("scene", "frame"))
 
 centroids <- smoothed_df %>%
   group_by(scene, chain, frame) %>%
   summarise(total_cycles = sum(cycles),
+            # weighted_x = sum(pred_x_smoothed * importance_smoothed),
+            # weighted_y = sum(pred_y_smoothed * importance_smoothed),
             weighted_x = sum(pred_x * importance_smoothed),
             weighted_y = sum(pred_y * importance_smoothed),
             geo_x = mean(pred_x),
@@ -83,14 +97,14 @@ probe_positions <- smoothed_df %>%
   select(chain, scene, epoch, probe_x, probe_y)
 
 importance_weighted <- smoothed_df %>%
-  select(chain, scene, epoch, tracker, pred_x, pred_y, cycles_smoothed) %>%
+  select(chain, scene, epoch, tracker, pred_x, pred_y, importance_smoothed) %>%
   left_join(probe_positions, by = c("chain", "scene", "epoch")) %>%
   mutate(dist_to_probe = sqrt((probe_x - pred_x)^2 + (probe_y - pred_y)^2),
          # importance_weighted = cycles_smoothed / log(dist_to_probe),
-         # importance_weighted = cycles_smoothed / (1 + dist_to_probe),
+         importance_weighted = importance_smoothed * exp(-dist_to_probe),
          
          ) %>%
-  select(-c(starts_with("pred"), cycles_smoothed))
+  select(-c(starts_with("pred"), importance_smoothed))
 
 # add distance to weighted and unweighted tracker means
 result <- smoothed_df %>%

@@ -206,7 +206,53 @@ good_full_data %>%
   theme_classic() + 
   theme(legend.position = "none",
         axis.ticks = element_blank(),
-        axis.title = element_blank())
+        axis.title = element_blank(),
+        axis.line = element_line(size = 1.0))
+
+good_td_by_subj_tracker %>%
+  filter(td == 1) %>%
+  mutate(vel = vel * 24 * 6.97 / 800) %>%
+  group_by(n_dist, ID) %>%
+  summarise(max_vel = max(vel)) %>%
+  group_by(n_dist) %>%
+  summarise(
+            sd_vel = sd(max_vel),
+            max_vel = mean(max_vel),
+            n = n(),
+            se = sd_vel / sqrt(n)) %>%
+  ggplot(aes(x = n_dist, max_vel)) +
+  geom_point(size = 2.5) + 
+  geom_errorbar(aes(ymin = max_vel - se,
+                    ymax = max_vel + se),
+                width = 0.3,
+                size = 1.0) + 
+  xlab("Number of distractors") + 
+  ylab("Velocity Threshold") + 
+  theme(aspect.ratio = 0.7,
+        axis.line = element_line(size = 1.0))
+
+model_perf %>%
+  filter(td_acc == 1) %>%
+  left_join(exp_design, by = "scene") %>%
+  mutate(vel = vel * 24 * 6.97 / 800) %>%
+  group_by(n_dist, chain) %>%
+  summarise(max_vel = max(vel)) %>%
+  group_by(n_dist) %>%
+  summarise(
+            sd_vel = sd(max_vel),
+            max_vel = mean(max_vel),
+            n = n(),
+            se = sd_vel / sqrt(n)) %>%
+  ggplot(aes(x = n_dist, max_vel)) +
+  geom_point(size = 2.5) + 
+  geom_errorbar(aes(ymin = max_vel - se,
+                    ymax = max_vel + se),
+                width = 0.3,
+                size = 1.0) + 
+  xlab("Number of distractors") + 
+  ylab("Velocity Threshold") + 
+  theme(aspect.ratio = 0.7,
+        axis.line = element_line(size = 1.0))
 
 ```
 ```{r bootstrap accuracy}
