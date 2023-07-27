@@ -11,3 +11,12 @@ output/
 data/
 .Rproj.user
 *.pdf
+
+
+.RData
+.Rprofile
+.config/
+.local/
+backups/
+renv/
+*.tar.gz
