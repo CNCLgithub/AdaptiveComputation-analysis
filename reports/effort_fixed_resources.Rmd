@@ -44,13 +44,9 @@ exp_design <- subject_data %>%
 group_by(scene) %>%
   summarise(across(c(vel, n_dist), first))
 
-model_att <- read_csv("../data/exp1/exp1_difficulty_target_designation_att.csv")
-model_perf <- read_csv("../data/exp1/exp1_difficulty_target_designation_perf.csv")
-# model_att <- read_csv("../data/exp1/exp1_difficulty_adaptive_computation_td_att.csv")
-# model_perf <- read_csv("../data/exp1/exp1_difficulty_adaptive_computation_td_perf.csv")
+model_att <- read_csv("../data/exp1/exp1_difficulty_fixed_resources_att.csv")
+model_perf <- read_csv("../data/exp1/exp1_difficulty_fixed_resources_perf.csv")
 
-avg_cycles <- mean(model_att$cycles)
-  
 ```
 
 ```{r filter subjects, echo=FALSE, results='hide'}
@@ -211,7 +207,8 @@ good_full_data %>%
   theme(legend.position = "none",
         axis.ticks = element_blank(),
         axis.title = element_blank(),
-      axis.line = element_line(size = 1.0))
+        axis.line = element_line(size = 1.0))
+
 
 ```
 ```{r bootstrap accuracy}
@@ -220,7 +217,7 @@ set.seed(0)
 univariate_acc <- function(data, indices) {
   d = data[indices,] # sample trials with replacement 
   fit <- d %>% with(lm(td_mu ~ td_model)) %>% summary
-  result <- fit$r.squared
+result <- fit$r.squared
   return(result) #return explained variance
 }
 
@@ -274,7 +271,7 @@ effort_cycles %>%
 good_full_data %>%
   ggplot(aes(x=scale(arousal), y=effort_mu)) +
   geom_point(color = "#5aa67b", size = 3.1) + 
-geom_smooth(method = "lm", color = "black") +
+  geom_smooth(method = "lm", color = "black") +
   theme_classic() + 
   theme(legend.position = "none",
         axis.ticks = element_blank(),

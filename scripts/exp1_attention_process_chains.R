@@ -4,6 +4,7 @@ library(tidyverse)
 library(ggplot2)
 library(readr)
 library(boot)
+library(slider)
 
 ############################# hyper parameters #################################
 model_smoothing = 48.0 # 12 frames per sd in gaussian kernel; 
@@ -21,7 +22,9 @@ probe_timings <- read_csv("project/data/exp2/exp2_probe_map_random.csv") %>%
 # attention traces; processed from `mot/scripts/analysis/aggregate_chains.jl`
 # scene, frame, tracker, cycles, chain, ...,
 # model_att <- read_csv("project/data/exp2/exp2_probes_target_designation_att.csv")
+# model_att <- read_csv("project/data/exp2/07_24_23_exp2_probes_adaptive_computation_td_att.csv")
 model_att <- read_csv("project/data/exp2/exp2_probes_adaptive_computation_td_att.csv")
+
 
 # distance to nearest distractor; from `mot/scripts/analysis/nd_probes.jl`
 # (not possible to extract directly from model predictions)
@@ -82,8 +85,6 @@ smoothed_df <- probe_timings %>%
 centroids <- smoothed_df %>%
   group_by(scene, chain, frame) %>%
   summarise(total_cycles = sum(cycles),
-            # weighted_x = sum(pred_x_smoothed * importance_smoothed),
-            # weighted_y = sum(pred_y_smoothed * importance_smoothed),
             weighted_x = sum(pred_x * importance_smoothed),
             weighted_y = sum(pred_y * importance_smoothed),
             geo_x = mean(pred_x),
@@ -99,10 +100,14 @@ probe_positions <- smoothed_df %>%
 importance_weighted <- smoothed_df %>%
   select(chain, scene, epoch, tracker, pred_x, pred_y, importance_smoothed) %>%
   left_join(probe_positions, by = c("chain", "scene", "epoch")) %>%
-  mutate(dist_to_probe = sqrt((probe_x - pred_x)^2 + (probe_y - pred_y)^2),
+  mutate(dist_to_probe = sqrt((probe_x - pred_x)^2 + (probe_y - pred_y)^2))
+
+probe_dist_w = max(importance_weighted$dist_to_probe)
+
+importance_weighted <- importance_weighted %>%
          # importance_weighted = cycles_smoothed / log(dist_to_probe),
-         importance_weighted = importance_smoothed * exp(-dist_to_probe),
-         
+         mutate(
+           importance_weighted = importance_smoothed * exp(-dist_to_probe/probe_dist_w),
          ) %>%
   select(-c(starts_with("pred"), importance_smoothed))
 
@@ -133,39 +138,3 @@ result %>%
 
 ############################### save result ####################################
 write_csv(result, "project/data/exp2/model_probe_covariates.csv")
-
-
-
-
-################################## misc ########################################
-# 
-# 
-# loc_error <- result %>%
-#   group_by(scene) %>%
-#   filter(frame == max(frame)) %>%
-#   mutate(pred_sd = pred_x_sd_mu + pred_y_sd_mu)
-# 
-# loc_error %>%
-#   ggplot(aes(x = cycles_mu, y = pred_sd)) + 
-#   geom_point() + 
-#   geom_smooth(method="lm")
-# 
-# loc_error %>%
-#   ggplot(aes(x = a3_centroid_mu, y = pred_sd)) + 
-#   geom_point() + 
-#   geom_smooth(method="lm")
-# 
-# loc_error %>%
-#   ggplot(aes(x = importance_smoothed_mu, y = pred_sd)) + 
-#   geom_point() + 
-#   geom_smooth(method="lm")
-# 
-# loc_error %>%
-#   ggplot(aes(x = sensitivity_smoothed_mu, y = pred_sd)) + 
-#   geom_point() + 
-#   geom_smooth(method="lm")
-# 
-# loc_error %>%
-#   with(lm(pred_sd ~ cycles_smoothed_mu)) %>%
-#   summary()
-

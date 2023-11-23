@@ -56,7 +56,7 @@ probe_timings <- read_csv("../data/exp2/exp2_probe_map_random.csv") %>%
 # covariates pre-processed by `scripts/exp1_attention_process_chains.R`
 exp_data <- read_csv("../data/exp2/model_probe_covariates.csv")
 
-model_perf <- read_csv("../data/exp2/exp2_probes_adaptive_computation_eu_perf.csv") %>%
+model_perf <- read_csv("../data/exp2/exp2_probes_adaptive_computation_td_perf.csv") %>%
   group_by(scene) %>%
   summarise(td = mean(td_acc))
 ```
@@ -222,27 +222,13 @@ using... TODO
 #   theme_classic() +
 #   ggtitle("HR ~ Raw sensitivity")
 
-
-leg_ate_by_probe <- read_csv("~/project/data/exp2/10_2022_ate-by-probe.csv") %>%
-  select(scene, frame, a3_centroid_mu, importance_smoothed_mu) %>%
-  rename(leg_a3_centroid = a3_centroid_mu,
-         leg_importance_smoothed = importance_smoothed_mu)
-
-
 ate_by_probe %>%
-  left_join(leg_ate_by_probe) %>%
-  ggplot(aes(x = importance_smoothed_mu, y = leg_importance_smoothed,
-             label = paste(scene, frame, tracker))) +
-  geom_point() + 
-  geom_text(hjust=0, vjust=0)
+  ggplot(aes(x = importance_smoothed_mu, y = hr)) +
+  geom_point(color = "#5aa67b", size = 3.1) + 
+  geom_smooth(method = "lm", color = "black") +
+  theme_classic() +
+  ggtitle("HR ~ Direct importance")
 
-ate_by_probe %>%
-  left_join(leg_ate_by_probe) %>%
-  ggplot(aes(x = paste(scene, frame, tracker), y = a3_centroid_mu - leg_a3_centroid,
-             label = paste(scene, frame, tracker))) +
-  geom_point() + 
-  geom_text(hjust=0, vjust=0)
-  
 
 ate_by_probe %>%
   ggplot(aes(x = spatial_importance, y = hr)) +
@@ -253,23 +239,18 @@ ate_by_probe %>%
 
 
 ate_by_probe %>%
-  ggplot(aes(y = hr, x = cycles_smoothed_mu,
-             label = paste(scene, frame, tracker))) +
-  geom_point(size = 3.1,
-             # color = "#5aa67b", 
-             ) + 
+  ggplot(aes(x = cycles_smoothed_mu, y = hr)) +
+  geom_point(color = "#5aa67b", size = 3.1) + 
   geom_smooth(method = "lm", color = "black") +
-  geom_text(hjust=0, vjust=0) +
-  theme_classic()
+  theme_classic() +
+  ggtitle("HR ~ Direct cycles")
 
 ate_by_probe %>%
-  ggplot(aes(x = a3_centroid_mu, y = hr,
-             label = paste(scene, frame, tracker))) +
+  ggplot(aes(x = a3_centroid_mu, y = hr)) +
   geom_point(size = 3.1,
-             # color = "#5aa67b", 
+             color = "#5aa67b",
              ) + 
   geom_smooth(method = "lm", color = "black") +
-  geom_text(hjust=0, vjust=0) +
   theme_classic() +
   ggtitle("HR ~ Attention Centroid")
 
@@ -303,10 +284,10 @@ ate_by_probe %>%
   with(lm(hr ~ importance_smoothed_mu,)) %>%
 summary()
 # 
-# print("Raw sensitivity")
-# ate_by_probe %>%
-#   with(lm(hr ~ sensitivity_smoothed_mu,)) %>%
-#   summary()
+print("Raw allocated steps")
+ate_by_probe %>%
+  with(lm(hr ~ cycles_smoothed_mu,)) %>%
+  summary()
 
 print("Spatial Importannce")
 ate_by_probe %>%
@@ -355,6 +336,9 @@ set.seed(0)
 univariate_test <- function(data, indices) {
   d = data[indices,] # sample trials with replacement 
   k = length(indices)
+  di = d %>% with(lm(hr ~ importance_smoothed_mu)) %>% summary
+  ds = d %>% with(lm(hr ~ cycles_smoothed_mu)) %>% summary
+  si = d %>% with(lm(hr ~ spatial_importance)) %>% summary
   ac = d %>% with(lm(hr ~ a3_centroid_mu)) %>% summary
   tc = d %>% with(lm(hr ~ geo_centroid_mu)) %>% summary
   nd = d %>% with(lm(hr ~ dist_to_nd)) %>% summary
@@ -362,7 +346,10 @@ univariate_test <- function(data, indices) {
   result <- c(ac$r.squared,
               tc$r.squared, 
               nd$r.squared,
-              or$r.squared)
+              or$r.squared,
+              di$r.squared,
+              si$r.squared,
+              ds$r.squared)
   return(result) #return explained variance
 }
 
@@ -391,6 +378,12 @@ univ_cis_hr_nd <- boot.ci(reps, type="perc", index=3) # nd
 univ_cis_hr_nd$mu <- mean(reps$t[,3])
 univ_cis_hr_or <- boot.ci(reps, type="perc", index=4) # or
 univ_cis_hr_or$mu <- mean(reps$t[,4])
+univ_cis_hr_di <- boot.ci(reps, type="perc", index=5) # di
+univ_cis_hr_di$mu <- mean(reps$t[,5])
+univ_cis_hr_si <- boot.ci(reps, type="perc", index=6) # si
+univ_cis_hr_si$mu <- mean(reps$t[,6])
+univ_cis_hr_ds <- boot.ci(reps, type="perc", index=7) # si
+univ_cis_hr_ds$mu <- mean(reps$t[,7])
 ```
 
 ## Comparing models
@@ -423,7 +416,7 @@ set.seed(0)
 
 reps <- boot(data=ate_by_probe, 
              statistic=dbht_function,
-             R=dbht_steps, 
+           R=dbht_steps, 
              ncpus = 8, 
              parallel = "multicore")
 
@@ -502,54 +495,6 @@ shc_probe_hr_ci
 shc_probe_hr_ci$mu <- mean(reps$t)
 ```
 
-<!-- ```{r  Leave one out analysis} -->
-
-<!-- leave_one_out_test <- function(data, indices) { -->
-
-<!--   d <- data.frame(data) -->
-
-<!--   nr = length(indices) -->
-
-<!--   all_but_one = indices[2:nr] -->
-
-<!--   the_one = indices[1:1] -->
-
-<!--   group_a <- group_perf(d[all_but_one,], "a") -->
-
-<!--   group_b <- group_perf(d[the_one,], "b") -->
-
-<!--   df <- rbind(group_a, group_b) %>% -->
-
-<!--     pivot_wider(names_from = g, -->
-
-<!--                 values_from = hr) -->
-
-<!--   fit <- df %>% with(lm(b ~ a)) %>% summary -->
-
-<!--   return (fit$r.square) -->
-
-<!-- } -->
-
-<!-- reps <- boot(data = subj_data_nested,  -->
-
-<!--              statistic=leave_one_out_test, -->
-
-<!--              sim = "permutation", -->
-
-<!--              R=5000, -->
-
-<!--              ncpus = 8,  -->
-
-<!--              parallel = "multicore") -->
-
-<!-- loo_plot <- plot(reps) -->
-
-<!-- loo_probe_hr_ci <- boot.ci(reps, type="bca") -->
-
-<!-- loo_probe_hr_ci$mu <- mean(reps$t) -->
-
-<!-- ``` -->
-
 Across all comparisons, the attention centroid forms a stronger
 correlation to probe hit rate (p \< .001).
 
@@ -569,10 +514,7 @@ fig2di_df <- data.frame(
                univ_cis_hr_tc$perc[5],
                univ_cis_hr_nd$perc[5],
                univ_cis_hr_or$perc[5]),
-  heuristic = factor(c(0, 1, 1, 1)),
-  shc_min = shc_probe_hr_ci$bca[4],
-  shc_max = shc_probe_hr_ci$bca[5],
-  yintercept = mean(shc_probe_hr_ci$mu))
+  heuristic = factor(c(0, 1, 1, 1)))
 
 univ_fig <- function() {
   fig2di_df%>%
@@ -643,7 +585,7 @@ res_bootstrap_steps = 5000
 
 ```{r Results}
 reps <- boot(data=ate_by_probe, 
-             statistic=residual_test, 
+           statistic=residual_test, 
              R=res_bootstrap_steps, 
              ncpus = 8,  parallel = "multicore")
 # visualizing samples for
@@ -775,9 +717,7 @@ td_by_scene <- td_by_subj_scene %>%
             td_human_sd = sd(td))
 
 td_by_scene <- model_perf %>%
-  group_by(scene) %>%
-  summarise(td_model = mean(td_acc_mu),
-          td_model_sd = sd(td_acc_mu)) %>%
+  rename(td_model = td) %>%
   left_join(td_by_scene, by = "scene")
 
 td_lr <- td_by_scene %>%
@@ -821,18 +761,23 @@ split_half_cor <- function(data, indices) {
   gbi = groups[[2]]
   group_a <- avg_group(d[gai,])
   group_b <- avg_group(d[gbi,])
-  df = data.frame(x = group_a,
-                  y = group_b)
-  fit <- df %>% with(lm(y ~ x)) %>% summary
-  return (fit$r.square)
+  # fit <- cor.test(group_a, group_b)
+  # return (fit$estimate) 
+  df <- data.frame(a = group_a,
+                   b = group_b)
+  fit <- df %>% with(lm(a ~ b)) %>% summary
+return (fit$r.square)
 }
+
 reps <- boot(data = subj_data_nested, 
              statistic=split_half_cor,
              sim = "permutation",
              R=5000,
              ncpus = 8, 
              parallel = "multicore")
+reps
 plot(reps)
 boot.ci(reps, type="all")
 mean(reps$t)
+1.0 - sum(reps$t > 0) / length(reps$t)
 ```

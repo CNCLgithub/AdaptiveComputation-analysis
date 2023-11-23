@@ -32,19 +32,20 @@ theme_set(th)
 load data (subject, exp, scenes)
 
 
-## Model and Design data
+## Speed threshold - Adaptive computation
 
 ```{r echo=FALSE, results='hide'}
 
 # <scene> | <ntargets> | <vel> 
 # exp_design <- read_csv("../data/exp3/exp_design.csv")
 
-
 model_att <- read_csv("../data/exp3/exp3_staircase_adaptive_computation_td_att.csv") %>%
   group_by(chain, ntargets, vel) %>%
-  summarise(total_cycles = sum(cycles)) %>%
+  summarise(total_cycles = sum(cycles),
+            avg_cycles = mean(cycles)) %>%
   group_by(ntargets, vel) %>%
-  summarise(total_cycles_avg = mean(total_cycles))
+  summarise(total_cycles_avg = mean(total_cycles),
+            avg_cycles = mean(avg_cycles))
 
 model_perf <- read_csv("../data/exp3/exp3_staircase_adaptive_computation_td_perf.csv") %>%
   # avg across tracker id
@@ -54,7 +55,7 @@ model_perf <- read_csv("../data/exp3/exp3_staircase_adaptive_computation_td_perf
 
 ```
 
-## Perfomance threshold
+### Perfomance threshold
 
 
 ```{r histogram}
@@ -87,7 +88,7 @@ staircase_df <- model_perf %>%
   left_join(model_att) %>%
   # maximum velocity obtained per chain until mistake was made
   group_by(chain, ntargets) %>%
-  summarise(vel_threshold = (max(vel) / 800) * 6.97 * 24.0, # deg / s
+  summarise(vel_threshold = max(vel) * 24.0, # world units / s
             max_cycles = max(total_cycles_avg)) %>%
   # average maximum velocity across chains for each ntarget
   group_by(ntargets) %>%
@@ -123,5 +124,91 @@ staircase_df %>%
   xlab("Number of targets") + 
   ylab("Max Cycles") + 
   ggtitle("Staircase for velocity threshold")
+
+```
+
+
+
+## Speed threshold - Fixed resources
+
+```{r echo=FALSE, results='hide'}
+
+# <scene> | <ntargets> | <vel> 
+# exp_design <- read_csv("../data/exp3/exp_design.csv")
+
+model_att <- read_csv("../data/exp3/exp3_staircase_fixed_resources_att.csv") %>%
+  group_by(chain, ntargets, vel) %>%
+  summarise(total_cycles = sum(cycles),
+            avg_cycles = mean(cycles)) %>%
+  group_by(ntargets, vel) %>%
+  summarise(total_cycles_avg = mean(total_cycles),
+            avg_cycles = mean(avg_cycles))
+
+model_perf <- read_csv("../data/exp3/exp3_staircase_fixed_resources_perf.csv") %>%
+  # avg across tracker id
+  group_by(chain, ntargets, vel) %>%
+  summarise(td_avg = mean(td_acc),
+            ntargets = n()) 
+
+```
+
+
+
+```{r histogram}
+
+nt_breaks = unique(model_perf$ntargets)
+vel_breaks = unique(model_perf$vel)
+breaks = list(x = nt_breaks, y = vel_breaks)
+
+model_perf_by_design <- model_perf %>%
+  group_by(ntargets, vel) %>%
+  summarise(td_avg = mean(td_avg)) %>%
+  left_join(model_att)
+
+model_perf_by_design %>%
+  ggplot(aes(y=vel, x=ntargets, z=td_avg)) +
+  stat_summary_2d(breaks=breaks) + 
+  xlab("Number of targets") + 
+  ylab("Object velocity")
+
+model_perf_by_design %>%
+  ggplot(aes(y=vel, x=ntargets, z=total_cycles_avg)) +
+  stat_summary_2d(breaks=breaks) + 
+  xlab("Number of targets") + 
+  ylab("Object velocity")
+```
+```{r}
+
+
+staircase_df <- model_perf %>%
+  left_join(model_att) %>%
+  # maximum velocity obtained per chain until mistake was made
+  group_by(chain, ntargets) %>%
+  summarise(vel_threshold = max(vel) * 24.0, # world units / s
+            max_cycles = max(total_cycles_avg)) %>%
+  # average maximum velocity across chains for each ntarget
+  group_by(ntargets) %>%
+  summarise(thresh_avg = mean(vel_threshold),
+            n = n(),
+            thresh_sd = sd(vel_threshold),
+            thresh_se = thresh_sd / sqrt(n),
+            max_cycles_avg = mean(max_cycles),
+            max_cycles_sd = sd(max_cycles),
+            max_cycles_se = max_cycles_sd / sqrt(n),
+            )
+
+staircase_df %>%
+  ggplot(aes(x = ntargets, y = thresh_avg)) + 
+  geom_point(size = 2.5, color = "#5aa67b") + 
+  geom_errorbar(aes(ymin = thresh_avg - thresh_se,
+                    ymax = thresh_avg + thresh_se),
+                width = 0.3,
+                color = "#5aa67b",
+                size = 1.0) + 
+  xlab("Number of targets") + 
+  ylab("Velocity Threshold") + 
+  # ggtitle("Staircase for velocity threshold") + 
+  theme(aspect.ratio = 0.7,
+        axis.line = element_line(size = 1.0))
 
 ```
