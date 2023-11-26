@@ -179,7 +179,7 @@ hr_by_probe <- good_subjects_data %>%
 
 importance_df <- exp_data %>%
   group_by(scene, epoch) %>%
-  summarise(spatial_importance = sum(importance_weighted_mu))
+  summarise(spatial_importance = sum(importance_weighted))
 
 ate_by_probe <- exp_data %>%
   filter(tracker == probed_tracker) %>%
@@ -187,7 +187,7 @@ ate_by_probe <- exp_data %>%
   left_join(hr_by_probe, by = c("scene", "frame", "epoch", "tracker")) %>%
   mutate(hr = ifelse(is.na(hr), 0, hr)) %>%
   group_by(scene) %>%
-  mutate(a3_centroid_rank = rank(a3_centroid_mu),
+  mutate(a3_centroid_rank = rank(a3_centroid),
          hr.rank = rank(hr)) %>%
   ungroup()
 
@@ -223,7 +223,7 @@ using... TODO
 #   ggtitle("HR ~ Raw sensitivity")
 
 ate_by_probe %>%
-  ggplot(aes(x = importance_smoothed_mu, y = hr)) +
+  ggplot(aes(x = importance_smoothed, y = hr)) +
   geom_point(color = "#5aa67b", size = 3.1) + 
   geom_smooth(method = "lm", color = "black") +
   theme_classic() +
@@ -239,25 +239,26 @@ ate_by_probe %>%
 
 
 ate_by_probe %>%
-  ggplot(aes(x = cycles_smoothed_mu, y = hr)) +
+  ggplot(aes(x = cycles_mean, y = hr)) +
   geom_point(color = "#5aa67b", size = 3.1) + 
   geom_smooth(method = "lm", color = "black") +
   theme_classic() +
   ggtitle("HR ~ Direct cycles")
 
 ate_by_probe %>%
-  ggplot(aes(x = a3_centroid_mu, y = hr)) +
+  ggplot(aes(x = a3_centroid, y = hr)) +
   geom_point(size = 3.1,
              color = "#5aa67b",
              ) + 
+  geom_text(aes(label = scene)) + 
   geom_smooth(method = "lm", color = "black") +
   theme_classic() +
   ggtitle("HR ~ Attention Centroid")
 
 ate_by_probe %>%
-  ggplot(aes(x = geo_centroid_mu, y = hr)) +
+  ggplot(aes(x = geo_centroid, y = hr)) +
   geom_point() + 
-  geom_smooth(method="lm")
+  geom_smooth(method="lm") +
   ggtitle("HR ~ Target Center")
 
 ate_by_probe %>%
@@ -266,7 +267,7 @@ ate_by_probe %>%
   ggtitle("HR ~ Nearest Distractor")
 
 ate_by_probe %>%
-  ggplot(aes(x = dist_to_center_mu, y = hr)) +
+  ggplot(aes(x = dist_to_center, y = hr)) +
   geom_point() + 
   ggtitle("HR ~ Origin")
 ```
@@ -276,17 +277,17 @@ Linear model fitting and bootstrap analysis
 ```{r Univariate linear fits}
 
 ate_by_probe %>%
-  with(lm(a3_centroid_mu ~ spatial_importance,)) %>%
+with(lm(a3_centroid ~ spatial_importance,)) %>%
 summary()
 
 print("Raw importance")
 ate_by_probe %>%
-  with(lm(hr ~ importance_smoothed_mu,)) %>%
+  with(lm(hr ~ importance_smoothed,)) %>%
 summary()
 # 
 print("Raw allocated steps")
 ate_by_probe %>%
-  with(lm(hr ~ cycles_smoothed_mu,)) %>%
+  with(lm(hr ~ cycles_mean,)) %>%
   summary()
 
 print("Spatial Importannce")
@@ -296,12 +297,12 @@ ate_by_probe %>%
 
 print("Adaptive computation centroid")
 ate_by_probe %>%
-  with(lm(hr ~ a3_centroid_mu,)) %>%
+  with(lm(hr ~ a3_centroid,)) %>%
   summary()
 
 print("Target center")
 ate_by_probe %>%
-  with(lm(hr ~ geo_centroid_mu,)) %>%
+  with(lm(hr ~ geo_centroid,)) %>%
   summary()
 
 
@@ -312,7 +313,7 @@ ate_by_probe %>%
 
 print("Distance to origin")
 ate_by_probe %>%
-  with(lm(hr ~ dist_to_center_mu,)) %>%
+  with(lm(hr ~ dist_to_center,)) %>%
   summary()
 ```
 
