@@ -44,10 +44,12 @@ exp_design <- subject_data %>%
 group_by(scene) %>%
   summarise(across(c(vel, n_dist), first))
 
-model_att <- read_csv("../data/exp1/exp1_difficulty_target_designation_att.csv")
-model_perf <- read_csv("../data/exp1/exp1_difficulty_target_designation_perf.csv")
+# model_att <- read_csv("../data/exp1/exp1_difficulty_target_designation_att.csv")
+# model_perf <- read_csv("../data/exp1/exp1_difficulty_target_designation_perf.csv")
 # model_att <- read_csv("../data/exp1/exp1_difficulty_adaptive_computation_td_att.csv")
 # model_perf <- read_csv("../data/exp1/exp1_difficulty_adaptive_computation_td_perf.csv")
+model_att <- read_csv("../data/exp1/exp1_difficulty_ac_td_att.csv")
+model_perf <- read_csv("../data/exp1/exp1_difficulty_ac_td_perf.csv")
 
 avg_cycles <- mean(model_att$cycles)
   
@@ -202,7 +204,7 @@ perf_model <- good_full_data %>%
 perf_model %>%
   summary()
 
-good_full_data %>%
+fig4_b <- good_full_data %>%
   ggplot(aes(x = td_model, 
              y = td_mu)) +
   geom_point(color = "#5aa67b", size = 3.1) + 
@@ -213,6 +215,8 @@ good_full_data %>%
         axis.title = element_blank(),
       axis.line = element_line(size = 1.0))
 
+ggsave("~/project/figures/fig4_b.svg", plot=fig4_b, height=3, width=4)
+fig4_b
 ```
 ```{r bootstrap accuracy}
 set.seed(0)
@@ -224,7 +228,7 @@ univariate_acc <- function(data, indices) {
   return(result) #return explained variance
 }
 
-univ_boostrap_steps = 10000
+univ_boostrap_steps = 5000
 
 reps <- boot(data=good_full_data, 
              statistic=univariate_acc,
@@ -253,7 +257,7 @@ good_full_data %>%
   ggtitle("Distribution of effort for humans and model")
 
 good_full_data %>%
-  ggplot(aes(x=vel, y=n_dist, z=effort_mu)) +
+ggplot(aes(x=vel, y=n_dist, z=effort_mu)) +
   stat_summary_2d(breaks=breaks) +
   ggtitle("effort ~ velocity + distractors")
 
@@ -271,15 +275,18 @@ effort_cycles %>%
 ```
 
 ```{r Fig 3B}
-good_full_data %>%
+fig3_b <- good_full_data %>%
   ggplot(aes(x=scale(arousal), y=effort_mu)) +
   geom_point(color = "#5aa67b", size = 3.1) + 
-geom_smooth(method = "lm", color = "black") +
+  geom_smooth(method = "lm", color = "black") +
   theme_classic() + 
   theme(legend.position = "none",
         axis.ticks = element_blank(),
         axis.title = element_blank())
 
+ggsave("fig3_b.svg", plot = fig3_b, height=4,width=7)
+
+fig3_b
 ```
 
 ```{r univ effort bootstrap}
@@ -393,8 +400,8 @@ resid_results
 
 ```{r Fig 3C}
 
-resid_results %>%
-  # filter(covariate != "exp") %>%
+fig3_c <- resid_results %>%
+# filter(covariate != "exp") %>%
   ggplot(aes(x = reorder(covariate, r.squared), y = r.squared)) + 
   geom_col(width = 0.5, fill = "#5aa67b")+
   geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.075, size = 0.7) + 
@@ -405,6 +412,8 @@ resid_results %>%
         # axis.text = element_blank(),
         aspect.ratio = 1.3
         )
+ggsave("fig3_c.svg", plot=fig3_c)
+fig3_c
 ```
 
 Here we address the possibility that effort ratings are primarily driven by subject's instrospectively perceived accuracy and instead reflect a measure of confidence rather than effort. To remove shared variance with human accuracy we performed partial regressions on human effort and model arousal.

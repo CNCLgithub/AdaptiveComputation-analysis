@@ -29,29 +29,36 @@ th <- theme_classic()
 theme_set(th)
 ```
 
+
+
+
 load data (subject, exp, scenes)
 
 
 ## Localization Error - Adaptive computation
 
 ```{r echo=FALSE, results='hide'}
+# model_name = "exp3_localization_error_adaptive_computation_td"
+model_name = "exp3_localization_error_ac_td"
+
 
 # covariates pre-processed by `scripts/exp1_attention_process_chains.R`
-exp_data <- read_csv("../data/exp3/exp3_localization_error_adaptive_computation_td_att.csv") %>%
-  filter(frame > 24)
+exp_data <- read_csv(paste("../data/exp3/", model_name, "_att.csv", sep="")) %>%
+  filter(frame > 12)
 
-dnd_data <- read_csv("../data/exp3/exp3_localization_error_adaptive_computation_td_dnd.csv") %>%
-# filter(frame == max(frame)) %>%
+dnd_data <- read_csv(paste("../data/exp3/", model_name, "_dnd.csv", sep="")) %>%
   select(-contains("pred"))
 
-model_perf <- read_csv("../data/exp3/exp3_localization_error_adaptive_computation_td_perf.csv")
+model_perf <- read_csv(paste("../data/exp3/", model_name, "_perf.csv", sep=""))
 
 mean(model_perf$td_acc)
 
 acc_thresh = 0.99
-loc_error_thresh = 3.0
-ecc_thresh = 0.90
-exp_data <- exp_data %>%
+loc_error_thresh = 2.5
+ecc_thresh = 3.0 # 0.99
+
+exp_data_func <- function(df) {
+  exp_data <- exp_data %>%
   mutate(sensitivity = pmax(sensitivity, -100)) %>%
   left_join(model_perf, by = c("chain", "scene", "tracker")) %>%
 # remove targets that were not correctly tracked
@@ -65,12 +72,15 @@ exp_data <- exp_data %>%
   filter(td_acc_mean > acc_thresh) %>%
   # remove extreme loc error
   mutate(z_loc_error = scale(loc_error_mean)) %>%
-  filter(z_loc_error < loc_error_thresh) %>%
+  filter(abs(z_loc_error) < loc_error_thresh) %>%
   mutate(deg_loc_error = (loc_error_mean / 800) * 6.97,
          deg_nn_dist = (nn_dist_mean / 800) * 6.97,
          ecc = sqrt(pred_x_mean^2 + pred_y_mean^2) / 400) %>%
-  filter(ecc < ecc_thresh)
+  filter(abs(scale(ecc)) < ecc_thresh)
+  return(exp_data)
+}
 
+exp_data <- exp_data_func(exp_data)
 # used in fixed resource model
 avg_cycles = mean(exp_data$cycles_mean)
 ```
@@ -105,11 +115,11 @@ exp_data %>%
 # bins from panel B (visually estimated)
 panel_bins = c(1.0, 1.4, 1.7, 2.1, 2.6, 3.6)
 # breaks = c(.32, 1.2, 1.55, 1.9, 2.35, 3.1, 4.0)
-breaks = c(.8, 1.2, 1.55, 1.9, 2.35, 3.1, 4.0)
+breaks = c(0, 1.2, 1.55, 1.95, 2.4, 3.1, 4.0)
 # breaks =c(0, .75, 1.25, 1.75, 2.25, 2.75, 4)
 
 loc_error$bin <-cut(loc_error$deg_nn_dist, breaks = breaks)
-# loc_error$bin <-cut_number(loc_error$deg_nn_dist, 6)
+# loc_error$bin <-cut_interval(loc_error$deg_nn_dist, 8)
 
 
 loc_error <- loc_error %>%
@@ -119,11 +129,13 @@ loc_error %>%
   group_by(bin) %>%
   summarise(n = n())
 
-loc_error %>%
+fig4_c1 <- loc_error %>%
   group_by(bin) %>%
   summarise(le_mu = mean(loc_error_mean),
             le_se = sd(loc_error_mean) / sqrt(n()),
-            x = mean(nn_dist_mean)) %>%
+          x = mean(nn_dist_mean)) %>%
+            # x = mean(deg_nn_dist)) %>%
+
   ungroup() %>%
   ggplot(aes(x = x, y = le_mu)) + 
   geom_point(color = "#5aa67b",) + 
@@ -136,6 +148,10 @@ loc_error %>%
   ylab("Localization error") +
   theme(aspect.ratio = 1.75)
 
+ggsave("~/project/figures/fig4_c1.svg", plot = fig4_c1,
+       height = 4, width = 2.5)
+
+fig4_c1
 
 loc_error %>%
   group_by(bin) %>%
@@ -146,7 +162,7 @@ loc_error %>%
   summary()
 
 loc_error %>%
-  ggplot(aes(x = nn_dist_mean, y = loc_error_mean)) + 
+  ggplot(aes(x = deg_nn_dist, y = loc_error_mean)) + 
   geom_point()
 
 ```
@@ -154,16 +170,16 @@ loc_error %>%
 ```{r}
 
 
-loc_error$bin <- cut_interval(loc_error$cycles_mean, n = 6)
-
+loc_error$bin <- cut_interval(loc_error$cycles_mean, n = 8)
+# 
 loc_error <- loc_error %>%
   filter(!is.na(bin))
-
+# 
 loc_error %>%
   group_by(bin) %>%
   summarise(n = n())
 
-loc_error %>%
+fig4_c2 <- loc_error %>%
   group_by(bin) %>%
   summarise(le_mu = mean(loc_error_mean),
             le_se = sd(loc_error_mean) / sqrt(n()),
@@ -185,6 +201,11 @@ loc_error %>%
             x = mean(cycles_mean)) %>%
   with(lm(le_mu ~ x)) %>%
   summary()
+
+ggsave("~/project/figures/fig4_c2.svg", plot = fig4_c2,
+       height = 4, width = 2.5)
+
+fig4_c2
 
 loc_error %>%
   ggplot(aes(x = cycles_mean, y = loc_error_mean)) + 
@@ -239,111 +260,111 @@ loc_error %>%
 
 
 
-## Localization Error - Fixed Resources
+<!-- ## Localization Error - Fixed Resources -->
 
 
-```{r echo=FALSE, results='hide'}
+<!-- ```{r echo=FALSE, results='hide'} -->
 
-exp_data <- read_csv("../data/exp3/exp3_localization_error_fixed_resources_att.csv") %>%
-filter(frame > 24)
+<!-- exp_data <- read_csv("../data/exp3/exp3_localization_error_fixed_resources_att.csv") %>% -->
+<!-- filter(frame > 24) -->
 
-dnd_data <- read_csv("../data/exp3/exp3_localization_error_fixed_resources_dnd.csv") %>%
-  select(-contains("pred"))
+<!-- dnd_data <- read_csv("../data/exp3/exp3_localization_error_fixed_resources_dnd.csv") %>% -->
+<!--   select(-contains("pred")) -->
 
-model_perf <- read_csv("../data/exp3/exp3_localization_error_fixed_resources_perf.csv")
+<!-- model_perf <- read_csv("../data/exp3/exp3_localization_error_fixed_resources_perf.csv") -->
 
-mean(model_perf$td_acc)
+<!-- mean(model_perf$td_acc) -->
 
-acc_thresh = 0.99
-loc_error_thresh = 3.0
-ecc_thresh = 0.99
-exp_data <- exp_data %>%
-  left_join(model_perf, by = c("chain", "scene", "tracker")) %>%
-  # filter(td_acc > acc_thresh) %>%
-  left_join(dnd_data, by = c("chain", "scene", "frame", "tracker")) %>%
-  group_by(scene, frame, tracker) %>%
-  summarise(across(c(cycles, pred_x, pred_y, loc_error, nn_dist, td_acc),
-                   list(mean = mean)),
-            )%>%
-  ungroup() %>%
-  # remove inaccurate trackers
-  filter(td_acc_mean > acc_thresh) %>%
-  # remove extreme loc error
-  mutate(z_loc_error = scale(loc_error_mean)) %>%
-  filter(z_loc_error < loc_error_thresh) %>%
-  mutate(deg_loc_error = (loc_error_mean / 800) * 6.97,
-         deg_nn_dist = (nn_dist_mean / 800) * 6.97,
-         ecc = sqrt(pred_x_mean^2 + pred_y_mean^2) / 400) %>%
-  # ignore eccentric objects
-  filter(ecc < ecc_thresh)
+<!-- acc_thresh = 0.99 -->
+<!-- loc_error_thresh = 3.0 -->
+<!-- ecc_thresh = 0.99 -->
+<!-- exp_data <- exp_data %>% -->
+<!--   left_join(model_perf, by = c("chain", "scene", "tracker")) %>% -->
+<!--   # filter(td_acc > acc_thresh) %>% -->
+<!--   left_join(dnd_data, by = c("chain", "scene", "frame", "tracker")) %>% -->
+<!--   group_by(scene, frame, tracker) %>% -->
+<!--   summarise(across(c(cycles, pred_x, pred_y, loc_error, nn_dist, td_acc), -->
+<!--                    list(mean = mean)), -->
+<!--             )%>% -->
+<!--   ungroup() %>% -->
+<!--   # remove inaccurate trackers -->
+<!--   filter(td_acc_mean > acc_thresh) %>% -->
+<!--   # remove extreme loc error -->
+<!--   mutate(z_loc_error = scale(loc_error_mean)) %>% -->
+<!--   filter(z_loc_error < loc_error_thresh) %>% -->
+<!--   mutate(deg_loc_error = (loc_error_mean / 800) * 6.97, -->
+<!--          deg_nn_dist = (nn_dist_mean / 800) * 6.97, -->
+<!--          ecc = sqrt(pred_x_mean^2 + pred_y_mean^2) / 400) %>% -->
+<!--   # ignore eccentric objects -->
+<!--   filter(ecc < ecc_thresh) -->
 
-```
-
-
-```{r}
-
-loc_error <- exp_data %>%
-  select(scene, frame, tracker, nn_dist_mean, deg_nn_dist, deg_loc_error, 
-         loc_error_mean, cycles_mean)
-
-loc_error %>%
-  ggplot(aes(x = deg_nn_dist)) + 
-  geom_histogram(bins=30)
-
-loc_error %>%
-  ggplot(aes(x = deg_loc_error)) + 
-  geom_histogram(bins=100)
+<!-- ``` -->
 
 
-```
+<!-- ```{r} -->
 
-```{r}
+<!-- loc_error <- exp_data %>% -->
+<!--   select(scene, frame, tracker, nn_dist_mean, deg_nn_dist, deg_loc_error,  -->
+<!--          loc_error_mean, cycles_mean) -->
 
-# bins from panel B (visually estimated)
-panel_bins = c(1.0, 1.4, 1.7, 2.1, 2.6, 3.6)
-# breaks = c(.32, 1.2, 1.55, 1.9, 2.35, 3.1, 4.0)
-breaks = c(.8, 1.2, 1.55, 1.9, 2.35, 3.1, 4.0)
-# breaks =c(0, .75, 1.25, 1.75, 2.25, 2.75, 4)
+<!-- loc_error %>% -->
+<!--   ggplot(aes(x = deg_nn_dist)) +  -->
+<!--   geom_histogram(bins=30) -->
 
-loc_error$bin <-cut(loc_error$deg_nn_dist, breaks = breaks)
-# loc_error$bin <-cut_number(loc_error$deg_nn_dist, 6)
-
-
-loc_error <- loc_error %>%
-  filter(!is.na(bin))
-
-loc_error %>%
-  group_by(bin) %>%
-  summarise(n = n())
-
-loc_error %>%
-  group_by(bin) %>%
-  summarise(le_mu = mean(loc_error_mean),
-            le_se = sd(loc_error_mean) / sqrt(n()),
-            x = mean(nn_dist_mean)) %>%
-  ungroup() %>%
-  ggplot(aes(x = x, y = le_mu)) + 
-  geom_point() + 
-  geom_line() +
-  geom_errorbar(aes(ymin = le_mu - le_se,
-                    ymax = le_mu + le_se),
-                 ) + 
-  xlab("Nearest Distractor") + 
-  ylab("Localization error") +
-  theme(aspect.ratio = 1.75)
+<!-- loc_error %>% -->
+<!--   ggplot(aes(x = deg_loc_error)) +  -->
+<!--   geom_histogram(bins=100) -->
 
 
-loc_error %>%
-  group_by(bin) %>%
-  summarise(le_mu = mean(loc_error_mean),
-            le_se = sd(loc_error_mean) / sqrt(n()),
-          x = mean(nn_dist_mean)) %>%
-  with(lm(le_mu ~ x)) %>%
-  summary()
+<!-- ``` -->
 
-loc_error %>%
-  ggplot(aes(x = nn_dist_mean, y = loc_error_mean)) + 
-  geom_point()
+<!-- ```{r} -->
+
+<!-- # bins from panel B (visually estimated) -->
+<!-- panel_bins = c(1.0, 1.4, 1.7, 2.1, 2.6, 3.6) -->
+<!-- # breaks = c(.32, 1.2, 1.55, 1.9, 2.35, 3.1, 4.0) -->
+<!-- breaks = c(.8, 1.2, 1.55, 1.9, 2.35, 3.1, 4.0) -->
+<!-- # breaks =c(0, .75, 1.25, 1.75, 2.25, 2.75, 4) -->
+
+<!-- loc_error$bin <-cut(loc_error$deg_nn_dist, breaks = breaks) -->
+<!-- # loc_error$bin <-cut_number(loc_error$deg_nn_dist, 6) -->
 
 
-```
+<!-- loc_error <- loc_error %>% -->
+<!--   filter(!is.na(bin)) -->
+
+<!-- loc_error %>% -->
+<!--   group_by(bin) %>% -->
+<!--   summarise(n = n()) -->
+
+<!-- loc_error %>% -->
+<!--   group_by(bin) %>% -->
+<!--   summarise(le_mu = mean(loc_error_mean), -->
+<!--             le_se = sd(loc_error_mean) / sqrt(n()), -->
+<!--             x = mean(nn_dist_mean)) %>% -->
+<!--   ungroup() %>% -->
+<!--   ggplot(aes(x = x, y = le_mu)) +  -->
+<!--   geom_point() +  -->
+<!--   geom_line() + -->
+<!--   geom_errorbar(aes(ymin = le_mu - le_se, -->
+<!--                     ymax = le_mu + le_se), -->
+<!--                  ) +  -->
+<!--   xlab("Nearest Distractor") +  -->
+<!--   ylab("Localization error") + -->
+<!--   theme(aspect.ratio = 1.75) -->
+
+
+<!-- loc_error %>% -->
+<!--   group_by(bin) %>% -->
+<!--   summarise(le_mu = mean(loc_error_mean), -->
+<!--             le_se = sd(loc_error_mean) / sqrt(n()), -->
+<!--           x = mean(nn_dist_mean)) %>% -->
+<!--   with(lm(le_mu ~ x)) %>% -->
+<!--   summary() -->
+
+<!-- loc_error %>% -->
+<!--   ggplot(aes(x = nn_dist_mean, y = loc_error_mean)) +  -->
+<!--   geom_point() -->
+
+
+<!-- ``` -->

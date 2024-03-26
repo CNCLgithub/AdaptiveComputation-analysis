@@ -39,15 +39,14 @@ load data (subject, exp, scenes)
 # <scene> | <ntargets> | <vel> 
 # exp_design <- read_csv("../data/exp3/exp_design.csv")
 
-model_att <- read_csv("../data/exp3/exp3_staircase_adaptive_computation_td_att.csv") %>%
+model_att <- read_csv("../data/exp3/exp3_staircase_ac_td_att.csv") %>%
   group_by(chain, ntargets, vel) %>%
   summarise(total_cycles = sum(cycles),
-            avg_cycles = mean(cycles)) %>%
-  group_by(ntargets, vel) %>%
-  summarise(total_cycles_avg = mean(total_cycles),
-            avg_cycles = mean(avg_cycles))
+            avg_cycles = mean(cycles))
 
-model_perf <- read_csv("../data/exp3/exp3_staircase_adaptive_computation_td_perf.csv") %>%
+# %>%
+
+model_perf <- read_csv("../data/exp3/exp3_staircase_ac_td_perf.csv") %>%
   # avg across tracker id
   group_by(chain, ntargets, vel) %>%
   summarise(td_avg = mean(td_acc),
@@ -64,10 +63,17 @@ nt_breaks = unique(model_perf$ntargets)
 vel_breaks = unique(model_perf$vel)
 breaks = list(x = nt_breaks, y = vel_breaks)
 
+model_att_by_design <- model_att %>%
+  group_by(ntargets, vel) %>%
+  summarise(total_cycles_avg = mean(total_cycles),
+            avg_cycles = mean(avg_cycles))
+
+  
+
 model_perf_by_design <- model_perf %>%
   group_by(ntargets, vel) %>%
   summarise(td_avg = mean(td_avg)) %>%
-  left_join(model_att)
+  left_join(model_att_by_design)
 
 model_perf_by_design %>%
   ggplot(aes(y=vel, x=ntargets, z=td_avg)) +
@@ -89,7 +95,7 @@ staircase_df <- model_perf %>%
   # maximum velocity obtained per chain until mistake was made
   group_by(chain, ntargets) %>%
   summarise(vel_threshold = max(vel) * 24.0, # world units / s
-            max_cycles = max(total_cycles_avg)) %>%
+            max_cycles = mean(total_cycles)) %>%
   # average maximum velocity across chains for each ntarget
   group_by(ntargets) %>%
   summarise(thresh_avg = mean(vel_threshold),
@@ -101,7 +107,8 @@ staircase_df <- model_perf %>%
             max_cycles_se = max_cycles_sd / sqrt(n),
             )
 
-staircase_df %>%
+
+fig4_a1 <- staircase_df %>%
   ggplot(aes(x = ntargets, y = thresh_avg)) + 
   geom_point(size = 2.5, color = "#5aa67b") + 
   geom_errorbar(aes(ymin = thresh_avg - thresh_se,
@@ -115,15 +122,36 @@ staircase_df %>%
   theme(aspect.ratio = 0.7,
         axis.line = element_line(size = 1.0))
 
-staircase_df %>%
+fig4_a2 <- staircase_df %>%
   ggplot(aes(x = ntargets, y = max_cycles_avg)) + 
-  geom_line() + 
-  geom_point() + 
+# geom_line() + 
+  geom_point(size = 2.5, color = "#5aa67b") + 
   geom_errorbar(aes(ymin = max_cycles_avg - max_cycles_se,
-                    ymax = max_cycles_avg + max_cycles_se)) + 
+                ymax = max_cycles_avg + max_cycles_se),
+                width = 0.3,
+                color = "#5aa67b",
+                size = 1.0) + 
   xlab("Number of targets") + 
   ylab("Max Cycles") + 
-  ggtitle("Staircase for velocity threshold")
+  ggtitle("Perceptual computations across target count")
+
+
+ggsave("~/project/figures/fig4_a1.svg", plot=fig4_a1,
+     height = 3, width = 4)
+ggsave("~/project/figures/fig4_a2.svg", plot=fig4_a2,
+     height = 3, width = 4)
+
+fig4_a1
+fig4_a2
+
+staircase_df %>%
+  with(lm(max_cycles_avg ~ log(ntargets))) %>%
+  summary()
+
+
+staircase_df %>%
+  with(lm(thresh_avg ~ log(ntargets))) %>%
+  summary()
 
 ```
 

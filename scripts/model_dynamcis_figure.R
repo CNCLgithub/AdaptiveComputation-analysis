@@ -2,24 +2,26 @@
 library(ggplot2)
 library(readr)
 library(scales)
-library(raster)
-library(minpack.lm)
+# library(raster)
+# library(minpack.lm)
 library(tidyverse)
-library(pracma)
+# library(pracma)
 
 th <- theme_classic()
 theme_set(th)
 
 # cycles per frame
 # scene, frame, tracker, cycles, chain
-model_att <- read_csv("project/data/exp2/exp2_probes_target_designation_att.csv") 
+# model_att <- read_csv("project/data/exp2/exp2_probes_target_designation_att.csv") 
+model_att <- read_csv("project/data/exp2/exp2_probes_ac_td_att.csv") %>%
+  group_by(scene, frame, tracker) %>%
+  summarise(across(-chain, list(mu = mean, sd = sd))) %>%
+  ungroup()
+
 
 model_smoothing = 12
 
 smoothed <- model_att %>%
-  group_by(scene, frame, tracker) %>%
-  summarise(across(-chain, list(mu = mean, sd = sd))) %>%
-  ungroup() %>%
   # mutate(cycles_mu = cycles_mu + 5) %>% # add base compute
   group_by(scene, tracker) %>%
   # add smoothing
@@ -48,10 +50,12 @@ full_data <- smoothed %>%
 
 scene_for_fig = 24
 
-full_data %>%
+colors = c("#a28f9d","#881671","#e77728","#29e7cd")
+
+fig1_e_importance <- full_data %>%
   filter(scene == scene_for_fig) %>%
   ggplot(aes(x = frame, y = importance_smoothed)) +
-  scale_color_manual(values = c("#A3A500","#00BF7D","#00B0F6","#E76BF3")) +
+  scale_color_manual(values = colors) +
   geom_line(aes(color = factor(tracker)), size = 1.5) + 
   theme(legend.position = "none",
         axis.ticks = element_blank(),
@@ -61,10 +65,12 @@ full_data %>%
         axis.line = element_blank()
   )
 
-arousal %>%
+ggsave("~/project/figures/fig1_e_importance.svg", plot = fig1_e_importance)
+
+fig1_e_arousal <- arousal %>%
   filter(scene == scene_for_fig) %>%
   ggplot(aes(x = frame, y = arousal)) +
-  scale_color_manual(values = c("#A3A500","#00BF7D","#00B0F6","#E76BF3")) +
+  scale_color_manual(values = colors) +
   geom_ribbon(aes(ymin = 0, ymax = arousal),
               fill = "gray",
               alpha = 0.5) + 
@@ -77,3 +83,4 @@ arousal %>%
         axis.line = element_blank()
   )
 
+ggsave("~/project/figures/fig1_e_arousal.svg", plot = fig1_e_arousal)
