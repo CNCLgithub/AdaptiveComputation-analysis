@@ -2,6 +2,7 @@
 .idea
 *.log
 tmp/
+figures/
 
 
 .Rhistory

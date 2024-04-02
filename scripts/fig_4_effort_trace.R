@@ -11,20 +11,22 @@ theme_set(th)
 
 # cycles per frame
 # scene, frame, tracker, cycles, chain
-model_att <- read_csv("project/data/exp1/exp1_difficulty_target_designation_att.csv") 
+# model_att <- read_csv("project/data/exp1/exp1_difficulty_target_designation_att.csv") 
+model_att <- read_csv("project/data/exp1/exp1_difficulty_ac_td_att.csv")
 
 model_smoothing = 12
 
 # apply same time-smoothing procedure as analysis
 exp_summary <- model_att %>%
-  group_by(scene, frame, tracker) %>%
-  summarise(across(-chain, list(mu = mean, sd = sd))) %>%
-  ungroup() %>%
-  group_by(scene, tracker) %>%
+  select(chain, scene, frame, tracker, cycles) %>%
+  group_by(chain, scene, frame) %>%
+  summarise(arousal = sum(cycles)) %>%
+  group_by(scene, frame) %>%
+  summarise(arousal = mean(arousal)) %>%
   # add smoothing
   nest_by() %>%
   mutate(att_xy = list(with(data,
-                            ksmooth(frame, cycles_mu, kernel = "normal", 
+                            ksmooth(frame, arousal, kernel = "normal", 
                                     bandwidth = model_smoothing)))) %>%
   mutate(arr_smoothed = list(att_xy$y)) %>%
   unnest(cols = c(data, arr_smoothed)) %>%
@@ -32,7 +34,7 @@ exp_summary <- model_att %>%
   ungroup()
 
 
-exp_summary %>%
+fig3_a <- exp_summary %>%
   filter(scene %in% c(1, 65)) %>%
   group_by(scene, frame) %>%
   summarise(total_att = sum(arr_smoothed)) %>%
@@ -63,3 +65,5 @@ exp_summary %>%
   ) + 
   scale_x_continuous(expand = expansion(mult = c(0.02, 0.01)))
 
+
+ggsave("~/project/figures/fig3_a.svg", plot = fig3_a)

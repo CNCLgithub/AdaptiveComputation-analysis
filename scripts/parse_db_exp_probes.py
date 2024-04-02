@@ -17,6 +17,10 @@ import pprint
 
 
 
+def read_json(file_path):
+    with open(file_path) as json_file:
+        return json.load(json_file)
+
 # Mostly from http://psiturk.readthedocs.io/en/latest/retrieving.html
 def read_db(db_path, table_name, codeversions, mode):
     data_column_name = "datastring"
@@ -75,67 +79,84 @@ def classify(probe_timing, spacebar):
     ds = spacebar - probe_timing
     return np.logical_and(ds >= 0, ds <= PROBE_WINDOW)
 
-def parse_row(row):
 
-    # scene data
-    gt_probes = row.TrialName[2]
-
+def parse_row(row, dataset):
     # target designation
-    td_acc = sum(row.Target[:4]) / 4.0
+    pred_targets = row.Target
+    gt_targets = dataset[row.scene-1]["aux_data"]["targets"]
+    td_acc = sum(pred_targets and gt_targets)/sum(gt_targets)
+    target_idxs = np.where(gt_targets)[0]
 
-    # probe data
-    probe_trackers, probe_frames = zip(*gt_probes)
-    FRAME_DURATION = 41.6667;
-    probe_timings = np.array(probe_frames)*FRAME_DURATION
+    # print(row.TrialName[:2])
     
-    spacebar = np.array(row.Probe)
-    response_frames = np.floor(spacebar / FRAME_DURATION).astype(int)
+    # some extra data for exp1_difficulty
+    vel = dataset[row.scene-1]["aux_data"]["vel"]
+    n_dist = dataset[row.scene-1]["aux_data"]["n_distractors"]
+
+    # probes
+    gt_probes = row.TrialName[2]
+    probe_trackers = np.full(4, -1)
+    response_frames = []
+
+    if gt_probes:
+        probe_trackers, probe_frames = zip(*gt_probes)
+        FRAME_DURATION = 41.6667;
+        probe_timings = np.array(probe_frames)*FRAME_DURATION
+        
+        spacebar = np.array(row.Probe)
+        response_frames = np.floor(spacebar / FRAME_DURATION).astype(int)
 
     template = {
         'WID' : row.WID,
         'scene' : row.TrialName[0],
-        'probe_id_1' : probe_trackers[0],
-        'probe_id_2' : probe_trackers[1],
-        'probe_id_3' : probe_trackers[2],
-        'probe_id_4' : probe_trackers[3],
-        'td_1' : row.Target[0],
-        'td_2' : row.Target[1],
-        'td_3' : row.Target[2],
-        'td_4' : row.Target[3],
+        # 'probe_id_1' : probe_trackers[0],
+        # 'probe_id_2' : probe_trackers[1],
+        # 'probe_id_3' : probe_trackers[2],
+        # 'probe_id_4' : probe_trackers[3],
+        'td_1' : row.Target[target_idxs[0]],
+        'td_2' : row.Target[target_idxs[1]],
+        'td_3' : row.Target[target_idxs[2]],
+        'td_4' : row.Target[target_idxs[3]],
+        'vel' : vel,
+        'n_dist' : n_dist
     }
+    for (i, p) in enumerate(probe_trackers):
+        template['probe_id_{0:d}'.format(i+1)] = p
+
     cols = [{'response_frame' : rf, **template} for rf in response_frames]
     # in case no response is recorded
     if len(cols) == 0:
         cols = [template]
     return pd.DataFrame(cols)
-
     
 
 def main():
 
-    parser = argparse.ArgumentParser(description = "Parses MOT Exp:1 data",
+    parser = argparse.ArgumentParser(description = "Parses MOT probe detection data",
         formatter_class = argparse.ArgumentDefaultsHelpFormatter)
    
+    parser.add_argument("--database", type = str, help = "Path to participant database",
+                        default = 'data/probes/participants.db')
     parser.add_argument("--dataset", type = str, help = "Path to trial dataset",
-                        default = 'data/participants.db')
-    parser.add_argument("--table_name", type = str, default = "exp1_live",
+                        default = 'data/probes/probes_dataset.json')
+    parser.add_argument("--table-name", type = str, default = "exp2_probes",
                         help = 'Table name')
-    parser.add_argument("--exp_flag", type = str, nargs ='+', default = ["1.0"],
+    parser.add_argument("--exp-flag", type = str, nargs ='+', default = ["1.0"],
                         help = 'Experiment version flag')
     parser.add_argument("--mode", type = str, default = "debug",
                         choices = ['debug', 'sandbox', 'live'],
                         help = 'Experiment mode')
     parser.add_argument("--trialsbyp", type = int, default = 40,
                         help = 'Number of trials expected per subject')
-    parser.add_argument("--trialdata", type = str, default = 'data/parsed_trials.csv',
+    parser.add_argument("--trialdata", type = str, default = 'data/probes/parsed_trials.csv',
                         help = 'Filename to dump parsed trial data')
-    parser.add_argument("--questiondata", type = str, default = 'data/parsed_questions.csv',
-                        help = 'Filename to dump parsed trial data')
-
+    parser.add_argument("--questiondata", type = str, default = 'data/probes/parsed_questions.csv',
+                        help = 'Filename to dump parsed trial data questions')
 
     args = parser.parse_args()
-
-    trs, qs = read_db(args.dataset, args.table_name, args.exp_flag, args.mode)
+    trs, qs = read_db(args.database, args.table_name, args.exp_flag, args.mode)
+    dataset = read_json(args.dataset)
+    trs.drop('Difficulty', axis=1, inplace=True)
 
     qs = qs.rename(index=str, columns={'uniqueid': 'WID'})
 
@@ -143,11 +164,14 @@ def main():
     trs = trs.rename(index=str,
                      columns={'ReactionTime':'RT',
                               'uniqueid':'WID'})
+
+
     trs['scene'] = trs['TrialName'].apply(lambda r: r[0])
 
-    row_data = pd.concat(trs.apply(parse_row, axis=1).tolist())
+    row_data = pd.concat(trs.apply(parse_row, axis=1, args=(dataset,)).tolist())
     trs = trs[['scene', 'WID', 'RT', 'condition', 'TrialOrder']]
     trs = trs.merge(row_data, on = ['scene', 'WID'])
+
 
     # Make sure we have 120 observations per participant
     trialsbyp = trs.groupby('WID').aggregate({"scene" : lambda x : len(x.unique())})
@@ -163,12 +187,13 @@ def main():
 
     trs["ID"] = trs.WID.apply(lambda x: wid_translate[x])
 
-
-    trs.to_csv(args.trialdata, index=False)
+    trial_path = 'data/exp2/parsed_trials_{0!s}.csv'.format(args.table_name)
+    trs.to_csv(trial_path, index=False)
 
     cl_qs = qs[qs.WID.isin(good_wids)].copy()
     cl_qs["ID"] = cl_qs.WID.apply(lambda x: wid_translate[x])
-    cl_qs[["ID", "instructionloops", "comments"]].to_csv(args.questiondata, index=False)
+    #cl_qs[["ID", "instructionloops", "comments"]].to_csv(args.questiondata, index=False)
+    cl_qs[["ID", "comments"]].to_csv(args.questiondata, index=False)
 
 if __name__ == '__main__':
     main()
