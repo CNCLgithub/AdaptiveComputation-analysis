@@ -132,25 +132,25 @@ def parse_row(row, dataset):
 
 def main():
 
-    parser = argparse.ArgumentParser(description = "Parses MOT Exp1-difficulty data",
+    parser = argparse.ArgumentParser(description = "Parses MOT probe detection data",
         formatter_class = argparse.ArgumentDefaultsHelpFormatter)
    
     parser.add_argument("--database", type = str, help = "Path to participant database",
-                        default = 'data/exp1_difficulty.db')
+                        default = 'data/probes/participants.db')
     parser.add_argument("--dataset", type = str, help = "Path to trial dataset",
-                        default = 'data/exp1_difficulty_dataset.json')
-    parser.add_argument("--table-name", type = str, default = "exp1_difficulty",
+                        default = 'data/probes/probes_dataset.json')
+    parser.add_argument("--table-name", type = str, default = "exp2_probes",
                         help = 'Table name')
     parser.add_argument("--exp-flag", type = str, nargs ='+', default = ["1.0"],
                         help = 'Experiment version flag')
     parser.add_argument("--mode", type = str, default = "debug",
                         choices = ['debug', 'sandbox', 'live'],
                         help = 'Experiment mode')
-    parser.add_argument("--trialsbyp", type = int, default = 25,
+    parser.add_argument("--trialsbyp", type = int, default = 40,
                         help = 'Number of trials expected per subject')
-    parser.add_argument("--trialdata", type = str, default = 'data/exp2/parsed_trials.csv',
+    parser.add_argument("--trialdata", type = str, default = 'data/probes/parsed_trials.csv',
                         help = 'Filename to dump parsed trial data')
-    parser.add_argument("--questiondata", type = str, default = 'data/exp2/parsed_questions.csv',
+    parser.add_argument("--questiondata", type = str, default = 'data/probes/parsed_questions.csv',
                         help = 'Filename to dump parsed trial data questions')
 
     args = parser.parse_args()
