@@ -38,7 +38,7 @@ theme_set(th)
 
 # Model design:
 # scene, frame
-probe_timings <- read_csv("../data/exp_probes/random_probe_timings.csv") %>%
+probe_timings <- read_csv("../data/probes/random_probe_timings.csv") %>%
   filter(scene <= 40) %>% # only use scenes 1-40
   group_by(scene, frame) %>%
   summarise() %>%
@@ -49,9 +49,9 @@ probe_timings <- read_csv("../data/exp_probes/random_probe_timings.csv") %>%
   ungroup()
 
 # covariates pre-processed by `scripts/exp1_attention_process_chains.R`
-exp_data <- read_csv("../data/exp_probes/model_probe_covariates.csv")
+exp_data <- read_csv("../data/probes/probe_covariates.csv")
 
-model_perf <- read_csv("../data/exp_probes/ac_td_perf.csv") %>%
+model_perf <- read_csv("../data/probes/ac_td_perf.csv") %>%
   group_by(scene) %>%
   summarise(td = mean(td_acc))
 ```
@@ -61,7 +61,7 @@ model_perf <- read_csv("../data/exp_probes/ac_td_perf.csv") %>%
 screen bad subjects
 
 ```{r echo=TRUE, results='hide'}
-subject_data <- read_csv("../data/exp2/parsed_trials_exp2_random_probes.csv") %>%
+subject_data <- read_csv("../data/exp_probes/parsed_trials.csv") %>%
   select(-c(WID)) %>%
   replace_na(list(response_frame = Inf))
 
@@ -125,6 +125,16 @@ subject_performance <- td_by_subj %>%
   left_join(probe_by_subj) %>%
   mutate(passed = (td_acc_mu - 0.5) > perf_thresh*td_acc_se & (hr - fp > 0.05))
 
+# hr and fp before exclusion
+subject_performance %>%
+  summarise(hr = mean(hr),
+            fp = mean(fp))
+
+# hr and fp after exclusion
+subject_performance %>%
+  filter(passed) %>%
+  summarise(hr = mean(hr),
+            fp = mean(fp))
 
 good_subjects_data <- subject_performance %>%
   filter(passed) %>%
@@ -133,7 +143,6 @@ good_subjects_data <- subject_performance %>%
   left_join(hr_by_subj_scene) %>%
   left_join(td_by_subj_scene, by = c("ID", "scene")) %>%
   ungroup() 
-
 
 
 n_passed = sum(subject_performance$passed)
@@ -196,8 +205,12 @@ subject_performance %>%
   geom_col()
 
 model_perf %>%
-  mutate(model_td = td) %>%
-  left_join(td_by_scene)
+  rename(model_td = td) %>%
+  left_join(td_by_scene) %>%
+  summarise(td = mean(td),
+            model_td = mean(model_td))
+
+
 ```
 
 ## Predicting probe hit rate with univariate models
@@ -269,16 +282,6 @@ ate_by_probe %>%
   theme_classic() +
   ggtitle("HR ~ Target Attention Centroid")
 
-
-ate_by_probe %>%
-  ggplot(aes(x = a3_centroid_tot, y = hr)) +
-  geom_point(size = 3.1,
-             color = "#5aa67b",
-           ) +
-  geom_text(aes(label = ifelse(scene == scene_select, paste(scene, frame, tracker), ""))) +
-  geom_smooth(method = "lm", color = "black") +
-  theme_classic() +
-  ggtitle("HR ~ Global Attention Centroid")
 
 
 ate_by_probe %>%
@@ -361,6 +364,7 @@ set.seed(0)
 univariate_test <- function(data, indices) {
   d = data[indices,] # sample trials with replacement 
   ds = d %>% with(lm(hr ~ cycles_smoothed)) %>% summary
+  di = d %>% with(lm(hr ~ importance_smoothed)) %>% summary
   si = d %>% with(lm(hr ~ spatial_importance)) %>% summary
   ac = d %>% with(lm(hr ~ a3_centroid)) %>% summary
   tc = d %>% with(lm(hr ~ geo_centroid)) %>% summary
@@ -440,7 +444,7 @@ reps <- boot(data=ate_by_probe,
              statistic=dbht_function,
              R=dbht_steps, 
              ncpus = 8, 
-             parallel = "multicore")
+           parallel = "multicore")
 
 #calculate pval
 dbht_tc_p_val = 1.0 - (sum(reps$t[, 1]) / reps$R)
@@ -744,6 +748,12 @@ td_by_scene <- td_by_subj_scene %>%
   group_by(scene) %>%
   summarise(td_human = mean(td),
             td_human_sd = sd(td))
+
+
+# human and model average performance
+td_by_scene %>%
+  summarise(td_human = mean(td_human),
+            td_model = mean(td_model))
 
 td_by_scene <- model_perf %>%
   rename(td_model = td) %>%

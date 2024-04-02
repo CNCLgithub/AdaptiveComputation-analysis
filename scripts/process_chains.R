@@ -11,7 +11,7 @@ model_smoothing = 48.0 # 12 frames per sd in gaussian kernel;
 min_sensitivity = -60000
 
 ############################### load raw data ##################################
-probe_timings <- read_csv("project/data/exp2/exp2_probe_map_random.csv") %>%
+probe_timings <- read_csv("project/data/probes/random_probe_timings.csv") %>%
   select(-contains("att")) %>%
   filter(scene <= 40) %>%
   group_by(scene) %>%
@@ -21,23 +21,12 @@ probe_timings <- read_csv("project/data/exp2/exp2_probe_map_random.csv") %>%
 
 # attention traces; processed from `mot/scripts/analysis/aggregate_chains.jl`
 # scene, frame, tracker, cycles, chain, ...,
-# model_att <- read_csv("project/data/exp2/exp2_probes_target_designation_att.csv")
-# model_att <- read_csv("project/data/exp2/07_24_23_exp2_probes_adaptive_computation_td_att.csv")
-# model_att <- read_csv("project/data/exp2/exp2_probes_adaptive_computation_td_att.csv")
-# model_att <- read_csv("project/data/exp2/force_probes_adaptive_computation_eu_att.csv")
-# model_att <- read_csv("project/data/exp2/fe_probes_adaptive_computation_eu_att.csv")
-model_att <- read_csv("project/data/exp2/exp2_probes_ac_td_att.csv")
+model_att <- read_csv("project/data/probes/exp_probes_ac_td_att.csv")
 
-
-
-model_perf <- read_csv("project/data/exp2/fe_probes_adaptive_computation_eu_perf.csv") %>%
-  group_by(scene, chain) %>%
-  summarise(td = mean(td_acc)) %>%
-  ungroup()
 
 # distance to nearest distractor;s from `mot/scripts/analysis/nd_probes.jl`
 # (not possible to extract directly from model predictions)
-dnd_predictions <- read_csv("project/data/exp2/exp2_probes_adaptive_computation_td_dnd_centroid.csv") %>%
+dnd_predictions <- read_csv("project/data/probes/exp_probes_ac_td_dnd_centroid.csv") %>%
   select(scene, frame, d_ic) %>%
   rename(dist_to_nd = d_ic)
 
@@ -47,7 +36,6 @@ dnd_predictions <- read_csv("project/data/exp2/exp2_probes_adaptive_computation_
 # min_sensitivity = min(min_sensitivity$sensitivity)
 
 smoothed_df <- model_att %>%
-  left_join(model_perf, by = c("scene", "chain")) %>%
   # clean up -Inf sensitivity values
   # mutate(sensitivity = ifelse(is.infinite(sensitivity),
   #                             min_sensitivity,
@@ -178,4 +166,4 @@ result %>%
 
 
 ############################### save result ####################################
-write_csv(result, "project/data/exp2/model_probe_covariates.csv")
+write_csv(result, "project/data/exp_probes/model_probe_covariates.csv")

@@ -1,5 +1,5 @@
 ---
-title: "Exp2: Effort"
+title: "Exp. Effort"
 output:
   pdf_document: default
   html_document:
@@ -21,8 +21,9 @@ knitr::opts_chunk$set(fig.pos = 'H',
                       echo=TRUE, warning=FALSE, message=FALSE)
 
 ```
-```{r , include=FALSE}
+```{r dependencies, include=FALSE}
 
+# Install packages if needed
 # install.packages("tidyverse")
 # install.packages("boot")
 library(tidyverse)
@@ -34,22 +35,18 @@ theme_set(th)
 
 
 ```{r load data, echo=TRUE, results='hide'}
-subject_data <- read_csv("../data/exp1/exp1_difficulty_parsed_trials.csv") %>%
+subject_data <- read_csv("../data/effort/parsed_trials.csv") %>%
   select(-c(WID)) %>%
   replace_na(list(response_frame = Inf)) %>%
-  group_by(ID) %>%
+group_by(ID) %>%
   mutate(effort = scale(difficulty))
 
 exp_design <- subject_data %>%
 group_by(scene) %>%
   summarise(across(c(vel, n_dist), first))
 
-# model_att <- read_csv("../data/exp1/exp1_difficulty_target_designation_att.csv")
-# model_perf <- read_csv("../data/exp1/exp1_difficulty_target_designation_perf.csv")
-# model_att <- read_csv("../data/exp1/exp1_difficulty_adaptive_computation_td_att.csv")
-# model_perf <- read_csv("../data/exp1/exp1_difficulty_adaptive_computation_td_perf.csv")
-model_att <- read_csv("../data/exp1/exp1_difficulty_ac_td_att.csv")
-model_perf <- read_csv("../data/exp1/exp1_difficulty_ac_td_perf.csv")
+model_att <- read_csv("../data/effort/exp_effort_ac_td_att.csv")
+model_perf <- read_csv("../data/effort/exp_effort_ac_td_perf.csv")
 
 avg_cycles <- mean(model_att$cycles)
   
@@ -213,7 +210,8 @@ fig4_b <- good_full_data %>%
   theme(legend.position = "none",
         axis.ticks = element_blank(),
         axis.title = element_blank(),
-      axis.line = element_line(size = 1.0))
+        axis.line = element_line(size = 1.0),
+        aspect.ratio = 0.7)
 
 ggsave("~/project/figures/fig4_b.svg", plot=fig4_b, height=3, width=4)
 fig4_b
@@ -228,7 +226,7 @@ univariate_acc <- function(data, indices) {
   return(result) #return explained variance
 }
 
-univ_boostrap_steps = 5000
+univ_boostrap_steps = 10000
 
 reps <- boot(data=good_full_data, 
              statistic=univariate_acc,
@@ -284,7 +282,7 @@ fig3_b <- good_full_data %>%
         axis.ticks = element_blank(),
         axis.title = element_blank())
 
-ggsave("fig3_b.svg", plot = fig3_b, height=4,width=7)
+ggsave("~/project/figures/fig3_b.svg", plot = fig3_b, height=4,width=7)
 
 fig3_b
 ```
@@ -354,7 +352,7 @@ residual_test <- function(data, indices) {
   return(result) #return R2 of model
 }
 
-res_bootstrap_steps = 5000
+res_bootstrap_steps = 10000
 ```
 
 ```{r Results}
@@ -412,7 +410,7 @@ fig3_c <- resid_results %>%
         # axis.text = element_blank(),
         aspect.ratio = 1.3
         )
-ggsave("fig3_c.svg", plot=fig3_c)
+ggsave("~/project/figures/fig3_c.svg", plot=fig3_c)
 fig3_c
 ```
 
