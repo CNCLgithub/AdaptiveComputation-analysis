@@ -51,7 +51,7 @@ probe_timings <- read_csv("../data/probes/random_probe_timings.csv") %>%
 # covariates pre-processed by `scripts/exp1_attention_process_chains.R`
 exp_data <- read_csv("../data/probes/probe_covariates.csv")
 
-model_perf <- read_csv("../data/probes/ac_td_perf.csv") %>%
+model_perf <- read_csv("../data/probes/exp_probes_ac_td_perf.csv") %>%
   group_by(scene) %>%
   summarise(td = mean(td_acc))
 ```
@@ -61,7 +61,7 @@ model_perf <- read_csv("../data/probes/ac_td_perf.csv") %>%
 screen bad subjects
 
 ```{r echo=TRUE, results='hide'}
-subject_data <- read_csv("../data/exp_probes/parsed_trials.csv") %>%
+subject_data <- read_csv("../data/probes/parsed_trials.csv") %>%
   select(-c(WID)) %>%
   replace_na(list(response_frame = Inf))
 
@@ -71,7 +71,7 @@ with_probes <- subject_data %>%
   nest_by(ID) %>%
   mutate(full = list(right_join(data, probe_timings, by = "scene"))) %>%
   select(-data) %>%
-  unnest(cols = full) %>%
+unnest(cols = full) %>%
   mutate(delta_t = response_frame - frame,
          hit = between(delta_t, 0, hit_window),
          fp = between(delta_t, hit_window+1, probe_space)) %>%
@@ -325,7 +325,7 @@ ate_by_probe %>%
 print("Target attention centroid")
 ate_by_probe %>%
   with(lm(hr ~ a3_centroid,)) %>%
-  summary()
+summary()
 
 print("Target center")
 ate_by_probe %>%
@@ -411,6 +411,7 @@ univ_cis_hr_si <- boot.ci(reps, type="perc", index=6) # si
 univ_cis_hr_si$mu <- mean(reps$t[,6])
 univ_cis_hr_ds <- boot.ci(reps, type="perc", index=7) # si
 univ_cis_hr_ds$mu <- mean(reps$t[,7])
+
 ```
 
 ## Comparing models
@@ -421,38 +422,21 @@ The test uses a random sample of subjects (with replacement) to measure
 the frequency of the attention centroid producing a higher absolute
 correlation to a given heuristic model.
 
-```{r test definition}
-dbht_function <- function(data, indices) {
-  d = data[indices,] # sample trials with replacement 
-  ac_r <- cor.test(~ hr + a3_centroid, data = d)
-  tc_r <- cor.test(~ hr + geo_centroid, data = d)
-  nd_r <- cor.test(~ hr + dist_to_nd, data = d)
-  or_r <- cor.test(~ hr + dist_to_center, data = d)
-  result <- c(abs(ac_r$estimate) > abs(tc_r$estimate),
-            abs(ac_r$estimate) > abs(nd_r$estimate),
-              abs(ac_r$estimate) > abs(or_r$estimate))
-  return(result)
-}
-
-dbht_steps = 10000
-```
 
 ```{r Attention centroid vs heuristics}
-set.seed(0)
 
-reps <- boot(data=ate_by_probe, 
-             statistic=dbht_function,
-             R=dbht_steps, 
-             ncpus = 8, 
-           parallel = "multicore")
+print("AC vs TC")
+quantile(reps$t[,1] - reps$t[,2], probs = c(0.025, 0.5, 0.975))
+print(paste("p =", mean(reps$t[,1] < reps$t[,2])))
 
-#calculate pval
-dbht_tc_p_val = 1.0 - (sum(reps$t[, 1]) / reps$R)
-dbht_tc_p_val
-dbht_nd_p_val = 1.0 - (sum(reps$t[, 2]) / reps$R)
-dbht_nd_p_val
-dbht_or_p_val = 1.0 - (sum(reps$t[, 3]) / reps$R)
-dbht_or_p_val
+print("AC vs ND")
+quantile(reps$t[,1] - reps$t[,3], probs = c(0.025, 0.5, 0.975))
+print(paste("p =", mean(reps$t[,1] < reps$t[,3])))
+
+print("AC vs OR")
+quantile(reps$t[,1] - reps$t[,4], probs = c(0.025, 0.5, 0.975))
+print(paste("p =", mean(reps$t[,1] < reps$t[,4])))
+
 ```
 
 Computing subject split half correlation (r-squared) to define upper
@@ -687,9 +671,24 @@ resid_results <-data.frame(model = c(rep("ac", each=3), "tc", "nd", "or"),
                            )
 
 resid_results
-ac_vs_tc_pval
-ac_vs_nd_pval
-ac_vs_or_pval
+
+  # result <- c(res_tc_ac, res_nd_ac, res_or_ac, # R2 of AC
+  #             res_ac_tc, res_ac_nd, res_ac_or, # R2 of heuristics
+  #             ac_vs_tc, ac_vs_nd, ac_vs_or)    # pval for hypothesis testing
+
+
+print("AC vs TC")
+quantile(reps$t[,1] - reps$t[,7], probs = c(0.025, 0.5, 0.975))
+print(paste("p =", mean(reps$t[,1] < reps$t[,7])))
+
+print("AC vs ND")
+quantile(reps$t[,1] - reps$t[,9], probs = c(0.025, 0.5, 0.975))
+print(paste("p =", mean(reps$t[,1] < reps$t[,9])))
+
+print("AC vs OR")
+quantile(reps$t[,1] - reps$t[,11], probs = c(0.025, 0.5, 0.975))
+print(paste("p =", mean(reps$t[,1] < reps$t[,11])))
+
 ```
 
 ```{r Fig 2D-ii}
