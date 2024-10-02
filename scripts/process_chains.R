@@ -11,6 +11,7 @@ model_smoothing = 48.0 # 12 frames per sd in gaussian kernel;
 min_sensitivity = -60000
 
 ############################### load raw data ##################################
+
 probe_timings <- read_csv("project/data/probes/random_probe_timings.csv") %>%
   select(-contains("att")) %>%
   filter(scene <= 40) %>%
@@ -19,9 +20,13 @@ probe_timings <- read_csv("project/data/probes/random_probe_timings.csv") %>%
   ungroup() %>%
   rename(probed_tracker = tracker)
 
+gt_target_center <- read_csv("project/data/probes/exp_probes_gt_tc.csv")
+
 # attention traces; processed from `mot/scripts/analysis/aggregate_chains.jl`
 # scene, frame, tracker, cycles, chain, ...,
 model_att <- read_csv("project/data/probes/exp_probes_ac_td_att.csv")
+# model_att <- read_csv("project/data/probes/exp_probes_td_att.csv")
+
 
 
 # distance to nearest distractor;s from `mot/scripts/analysis/nd_probes.jl`
@@ -35,13 +40,29 @@ dnd_predictions <- read_csv("project/data/probes/exp_probes_ac_td_dnd_centroid.c
 #   filter(!is.infinite((sensitivity)))
 # min_sensitivity = min(min_sensitivity$sensitivity)
 
-smoothed_df <- model_att %>%
-  # clean up -Inf sensitivity values
-  # mutate(sensitivity = ifelse(is.infinite(sensitivity),
-  #                             min_sensitivity,
-  #                             sensitivity)) %>%
-  group_by(chain, scene, tracker) %>%
+gt_target_center <- gt_target_center %>%
+  group_by(scene) %>%
   # add smoothing
+  nest_by() %>%
+  mutate(
+    gt_txs = list(with(data,
+                       ksmooth(frame, tx, kernel = "normal",
+                               bandwidth = model_smoothing))),
+    gt_tys = list(with(data,
+                       ksmooth(frame, ty, kernel = "normal",
+                               bandwidth = model_smoothing))),
+  ) %>%
+  mutate(
+    gt_tx_smoothed = list(gt_txs$y),
+    gt_ty_smoothed = list(gt_tys$y),
+  ) %>%
+  unnest(cols = c(data, gt_tx_smoothed, gt_ty_smoothed)) %>%
+  dplyr::select(-c(gt_txs, gt_tys)) %>%
+  ungroup()
+
+
+smoothed_df <- model_att %>%
+  group_by(chain, scene, tracker) %>%
   nest_by() %>%
   mutate(att_xy = list(with(data,
                             ksmooth(frame, importance, kernel = "normal",
@@ -55,37 +76,25 @@ smoothed_df <- model_att %>%
          pred_ys = list(with(data,
                              ksmooth(frame, pred_y, kernel = "normal",
                                      bandwidth = model_smoothing))),
-# 
-#          sens_xy = list(with(data,
-#                              ksmooth(frame, sensitivity, kernel = "normal",
-#                                      bandwidth = model_smoothing))),
+        
   ) %>%
   mutate(importance_smoothed = list(att_xy$y),
          cycles_smoothed = list(cycles_xy$y),
-         # sensitivity_smoothed = list(sens_xy$y),
          pred_x_smoothed = list(pred_xs$y),
          pred_y_smoothed = list(pred_ys$y),
   ) %>%
   unnest(cols = c(data,
                   importance_smoothed,
                   cycles_smoothed,
-                  # sensitivity_smoothed,
                   pred_x_smoothed, pred_y_smoothed,
   )) %>%
   dplyr::select(-c(att_xy,
                    cycles_xy,
-                   # sens_xy,
                    pred_xs,
                    pred_ys,
   )) %>%
   ungroup()
 
-# smoothed_df <- model_att %>%
-#   left_join(model_perf, by = c("scene", "chain")) %>%
-#   mutate(importance_smoothed = importance,
-#          pred_x_smoothed = pred_x,
-#          pred_y_smoothed = pred_y,
-#          cycles_smoothed = cycles)
 
 # extract probed frames
 smoothed_df <- probe_timings %>%
@@ -96,17 +105,19 @@ centroids <- smoothed_df %>%
   summarise(total_cycles = sum(cycles_smoothed),
             tot_att_x = sum(pred_x_smoothed * importance_smoothed),
             tot_att_y = sum(pred_y_smoothed * importance_smoothed),
-            tot_avg_x = mean(pred_x_smoothed),
-            tot_avg_y = mean(pred_y_smoothed)) %>%
-  ungroup()
+            # tot_avg_x = mean(pred_x_smoothed),
+            # tot_avg_y = mean(pred_y_smoothed)
+            ) %>%
+  ungroup() %>%
+  left_join(gt_target_center, by = c("scene", "frame"))
 
 tgt_centroids <- smoothed_df %>%
   filter(tracker <= 4) %>%
   group_by(scene, chain, frame) %>%
   summarise(tgt_att_x = sum(pred_x_smoothed * importance_smoothed),
             tgt_att_y = sum(pred_y_smoothed * importance_smoothed),
-            tgt_avg_x = mean(pred_x_smoothed),
-            tgt_avg_y = mean(pred_y_smoothed)
+            # tgt_avg_x = mean(pred_x_smoothed),
+            # tgt_avg_y = mean(pred_y_smoothed)
             ) %>%
   ungroup()
 
@@ -139,14 +150,8 @@ result <- smoothed_df %>%
   left_join(tgt_centroids, by = c("chain", "scene", "frame")) %>%
   left_join(importance_weighted, by = c("chain", "scene", "epoch", "tracker")) %>%
   mutate(
-    # a3_centroid = sqrt((tgt_att_x - pred_x_smoothed)^2 + (tgt_att_y - pred_y_smoothed)^2),
-    # a3_centroid_tot = sqrt((tot_att_x - pred_x_smoothed)^2 + (tot_att_y - pred_y_smoothed)^2),
     a3_centroid = sqrt((tot_att_x - pred_x)^2 + (tot_att_y - pred_y)^2),
-    
-    # geo_centroid = sqrt((tgt_avg_x - pred_x_smoothed)^2 + (tgt_avg_y - pred_y_smoothed)^2),
-    # geo_centroid_tot = sqrt((tot_avg_x - pred_x_smoothed)^2 + (tot_avg_y - pred_y_smoothed)^2),
-    geo_centroid = sqrt((tot_avg_x - pred_x)^2 + (tot_avg_y - pred_y)^2),
-    
+    geo_centroid = sqrt((gt_tx_smoothed - pred_x)^2 + (gt_ty_smoothed - pred_y)^2),
     dist_to_center = sqrt(pred_x_smoothed^2 + pred_y_smoothed^2),
   ) %>%
   group_by(scene, frame, tracker, probed_tracker, epoch) %>%
@@ -166,4 +171,4 @@ result %>%
 
 
 ############################### save result ####################################
-write_csv(result, "project/data/exp_probes/model_probe_covariates.csv")
+write_csv(result, "project/data/probes/model_probe_covariates_revision.csv")
