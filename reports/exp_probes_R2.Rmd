@@ -33,6 +33,11 @@ th <- theme_classic()
 theme_set(th)
 ```
 
+```{r}
+
+source("../scripts/process_chains.R")
+```
+
 ## Model and Design data
 
 ```{r echo=FALSE, results='hide'}
@@ -49,10 +54,14 @@ probe_timings <- read_csv("../data/probes/random_probe_timings.csv") %>%
   mutate(epoch = dense_rank(frame)) %>%
   ungroup()
 
-# covariates pre-processed by `scripts/exp1_attention_process_chains.R`
-exp_data <- read_csv("../data/probes/model_probe_covariates_revision.csv")
+exp_data = process_chains("../data/probes/random_probe_timings.csv",
+                          "../data/probes/exp_probes_ac_td_att.csv",
+                          "../data/probes/exp_probes_ac_td_dnd_centroid.csv")
 
-model_perf <- read_csv("../data/probes/exp_probes_na_perf.csv") %>%
+# covariates pre-processed by `scripts/exp1_attention_process_chains.R`
+# exp_data <- read_csv("../data/probes/model_probe_covariates_revision.csv")
+
+model_perf <- read_csv("../data/probes/exp_probes_ac_td_perf.csv") %>%
   group_by(scene) %>%
   summarise(td = mean(td_acc))
 ```
@@ -152,7 +161,7 @@ n_passed = sum(subject_performance$passed)
 
 # Analysis
 
-## Causal effects
+## Combining human and model covariates
 
 First collect all data points (no averaging across scene)
 
@@ -187,7 +196,7 @@ importance_df <- exp_data %>%
   summarise(spatial_importance = sum(importance_weighted * (tracker <= 4)),
             spatial_importance_tot = sum(importance_weighted))
 
-ate_by_probe <- exp_data %>%
+probe_exp_df <- exp_data %>%
   filter(tracker == probed_tracker) %>%
   left_join(importance_df, by = c("scene", "epoch")) %>%
   left_join(hr_by_probe, by = c("scene", "frame", "epoch", "tracker")) %>%
@@ -206,12 +215,25 @@ subject_performance %>%
   ggplot(aes(x = factor(ID), y = hr - fp)) +
   geom_col()
 
-model_perf %>%
-  rename(model_td = td) %>%
-  left_join(td_by_scene) %>%
-  summarise(td = mean(td),
-            model_td = mean(model_td))
 
+  
+human_td_acc = subject_performance %>%
+  filter(passed) %>%
+  with(mean(td_acc_mu))
+
+model_td_acc = model_perf %>%
+  with(mean(td))
+
+sprintf("Human acc: %0.3f; Model acc: %0.3f", human_td_acc, model_td_acc)
+
+
+subject_performance %>%
+  filter(passed) %>%
+  ggplot(aes(x  = td_acc_mu)) + 
+  geom_histogram(bins = 15) + 
+  geom_vline(xintercept = model_td_acc) + 
+  xlim(0.5, 1.0) + 
+  xlab("Human tracking accuracy")
 
 ```
 
@@ -228,7 +250,7 @@ using... TODO
 scene_select = 39
 
 
-ate_by_probe %>%
+probe_exp_df %>%
   ggplot(aes(x = importance_smoothed, y = hr)) +
   geom_point( aes(color = cycles_smoothed), size = 3.1) + 
   geom_smooth(color = "black", method="lm") +
@@ -237,7 +259,7 @@ ate_by_probe %>%
   theme_classic() +
   ggtitle("HR ~ Direct importance")
 
-ate_by_probe %>%
+probe_exp_df %>%
   # filter(cycles_smoothed > 4) %>%
   ggplot(aes(x = log(importance_smoothed), y = hr)) +
   geom_point(size = 3.1, aes(color = cycles_smoothed)) + 
@@ -248,7 +270,7 @@ ate_by_probe %>%
   ggtitle("HR ~ Direct importance")
 
 
-ate_by_probe %>%
+probe_exp_df %>%
   ggplot(aes(x = spatial_importance, y = hr, label = paste(scene, frame, tracker))) +
   geom_point(color = "#5aa67b", size = 3.1) + 
   # geom_text() + 
@@ -256,7 +278,7 @@ ate_by_probe %>%
   theme_classic() +
   ggtitle("HR ~ Target Spatial importance")
 
-ate_by_probe %>%
+probe_exp_df %>%
   ggplot(aes(x = spatial_importance, y = hr, label = paste(scene, frame, tracker))) +
   geom_point(color = "#5aa67b", size = 3.1) + 
   # geom_text() + 
@@ -265,7 +287,7 @@ ate_by_probe %>%
   ggtitle("HR ~ Global Spatial importance")
 
 
-ate_by_probe %>%
+probe_exp_df %>%
   ggplot(aes(x = cycles_smoothed, y = hr)) +
   geom_point(color = "#5aa67b", size = 3.1) +
   geom_smooth(method = "lm", color = "black") +
@@ -273,7 +295,7 @@ ate_by_probe %>%
   ggtitle("HR ~ Direct cycles")
 
 
-ate_by_probe %>%
+probe_exp_df %>%
   ggplot(aes(x = a3_centroid, y = hr)) +
   geom_point(size = 3.1,
              color = "#5aa67b",
@@ -287,7 +309,7 @@ ate_by_probe %>%
 
 
 
-ate_by_probe %>%
+probe_exp_df %>%
   ggplot(aes(x = geo_centroid, y = hr)) +
   geom_point() + 
   geom_smooth(method="lm") +
@@ -296,12 +318,12 @@ ate_by_probe %>%
   facet_wrap(vars(cycles_smoothed > 1)) +
   ggtitle("HR ~ Target Center")
 
-ate_by_probe %>%
+probe_exp_df %>%
   ggplot(aes(x = dist_to_nd, y = hr)) +
   geom_point() + 
   ggtitle("HR ~ Nearest Distractor")
 
-ate_by_probe %>%
+probe_exp_df %>%
   ggplot(aes(x = dist_to_center, y = hr)) +
   geom_point() + 
   ggtitle("HR ~ Origin")
@@ -310,7 +332,7 @@ ate_by_probe %>%
 ```{r}
 
 
-nested_by_att <- ate_by_probe %>%
+nested_by_att <- probe_exp_df %>%
 mutate(att_lvl = cut_number(total_cycles, n = 4)) %>%
   group_by(att_lvl) %>%
   nest()
@@ -375,43 +397,43 @@ Linear model fitting and bootstrap analysis
 ```{r Univariate linear fits}
 
 print("Raw importance")
-ate_by_probe %>%
+probe_exp_df %>%
   with(lm(hr ~ importance_smoothed)) %>%
   summary()
 
 print("Raw allocated steps")
-ate_by_probe %>%
+probe_exp_df %>%
   with(lm(hr ~ cycles_smoothed,)) %>%
   summary()
 
 print("Spatial Importannce")
-ate_by_probe %>%
+probe_exp_df %>%
   with(lm(hr ~ spatial_importance,)) %>%
   summary()
 
 print("Target attention centroid")
-ate_by_probe %>%
+probe_exp_df %>%
   with(lm(hr ~ a3_centroid,)) %>%
   summary()
 
 print("Target center")
-ate_by_probe %>%
+probe_exp_df %>%
   with(lm(hr ~ geo_centroid,)) %>%
   summary()
 
 print("Distance to nearest distractor")
-ate_by_probe %>%
+probe_exp_df %>%
   with(lm(hr ~ dist_to_nd,)) %>%
   summary()
 
 print("Distance to origin")
-ate_by_probe %>%
+probe_exp_df %>%
   with(lm(hr ~ dist_to_center,)) %>%
   summary()
 ```
 
 ```{r Fig 2B}
-fig2_b <- ate_by_probe %>%
+fig2_b <- probe_exp_df %>%
   ggplot(aes(x = a3_centroid, y = hr)) +
   geom_point(color = "#5aa67b", size = 3.1) + 
   geom_smooth(method = "lm", color = "black") +
@@ -451,7 +473,7 @@ univ_boostrap_steps = 10000
 ```
 
 ```{r univariate bootstraps}
-reps <- boot(data=ate_by_probe, 
+reps <- boot(data=probe_exp_df, 
              statistic=univariate_test,
              R=univ_boostrap_steps, 
              ncpus = 8,
@@ -665,7 +687,7 @@ res_bootstrap_steps = 10000
 ```
 
 ```{r Results}
-reps <- boot(data=ate_by_probe, 
+reps <- boot(data=probe_exp_df, 
        statistic=residual_test, 
              R=res_bootstrap_steps, 
              ncpus = 8,  parallel = "multicore")
@@ -805,39 +827,23 @@ fig2_e
 ### Target designation
 
 ```{r}
-
-td_by_scene_tracker <- td_by_subj_tracker %>%
-  group_by(scene, tracker) %>%
-  summarise(td = mean(td))
-
-td_by_scene <- td_by_subj_scene %>%
+td_by_scene <- subject_performance %>%
+  filter(passed) %>%
+  select(ID) %>%
+  left_join(td_by_subj_scene) %>%
   group_by(scene) %>%
-  summarise(td_human = mean(td),
-            td_human_sd = sd(td))
-
-
-# human and model average performance
-td_by_scene %>%
-  summarise(td_human = mean(td_human),
-            td_model = mean(td_model))
-
-td_by_scene <- model_perf %>%
-  rename(td_model = td) %>%
-  left_join(td_by_scene, by = "scene")
-
-td_lr <- td_by_scene %>%
-with(lm(td_human ~ td_model))
-
-td_by_scene$td_human_res = td_lr$residuals
-td_by_scene <- td_by_scene %>%
-  mutate(abs_res = abs(td_human_res))
-
-td_lr %>% summary()
+  summarise(td_human = mean(td)) %>%
+  left_join(model_perf) %>%
+  rename(td_model = td)
 
 td_by_scene %>%
-ggplot(aes(x = td_model, y = td_human, label = scene)) +
+  ggplot(aes(x = td_model, y = td_human, label = scene)) +
   geom_point() + 
   geom_text()
+
+td_by_scene %>%
+  with(lm(td_human ~ td_model)) %>%
+  summary()
 ```
 
 ```{r  split half correlation}
