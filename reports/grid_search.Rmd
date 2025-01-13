@@ -1,0 +1,329 @@
+---
+title: "Grid search"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+header-includes:
+ \usepackage{booktabs}
+ \usepackage{longtable}
+ \usepackage{array}
+ \usepackage{multirow}
+ \usepackage{wrapfig}
+ \usepackage{float}
+ \floatplacement{figure}{H}
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Setup
+
+```{r , include=FALSE}
+knitr::opts_chunk$set(fig.pos = 'H', 
+                      echo=TRUE, warning=FALSE, message=FALSE)
+
+library(tidyverse)
+library(ggplot2)
+library(readr)
+library(boot)
+library(broom)
+
+th <- theme_classic()
+theme_set(th)
+```
+
+```{r}
+
+source("../scripts/process_chains.R")
+```
+
+## Model and Design data
+
+```{r echo=FALSE, results='hide'}
+
+# Model design:
+# scene, frame
+probe_timings <- read_csv("../data/probes/random_probe_timings.csv") %>%
+  filter(scene <= 40) %>% # only use scenes 1-40
+  group_by(scene, frame) %>%
+  summarise() %>%
+  ungroup() %>%
+  mutate(probe = frame) %>%
+  group_by(scene) %>%
+  mutate(epoch = dense_rank(frame)) %>%
+  ungroup()
+
+
+
+# exp_data = process_chains("../data/probes/random_probe_timings.csv",
+#                           "../data/probes/exp_probes_ac_td_att.csv",
+#                           "../data/probes/exp_probes_ac_td_dnd_centroid.csv")
+
+# covariates pre-processed by `scripts/exp1_attention_process_chains.R`
+# exp_data <- read_csv("../data/probes/model_probe_covariates_revision.csv")
+
+```
+
+## Subject Data
+
+screen bad subjects
+
+```{r echo=TRUE, results='hide'}
+subject_data <- read_csv("../data/probes/parsed_trials.csv") %>%
+  select(-c(WID)) %>%
+  replace_na(list(response_frame = Inf))
+
+hit_window = 36 # subjects hit if response 1.5s after probe onset
+probe_space = 60 # 2.5 seconds between probes
+with_probes <- subject_data %>%
+  nest_by(ID) %>%
+  mutate(full = list(right_join(data, probe_timings, by = "scene"))) %>%
+  select(-data) %>%
+unnest(cols = full) %>%
+  mutate(delta_t = response_frame - frame,
+         hit = between(delta_t, 0, hit_window),
+         fp = between(delta_t, hit_window+1, probe_space)) %>%
+  ungroup()
+```
+
+```{r echo=FALSE}
+hr_by_subj_scene <- with_probes %>%
+  group_by(ID, scene, probe) %>%
+  summarise(hit = any(hit)) %>%
+  group_by(ID, scene) %>%
+  summarise(hr = mean(hit))
+
+fp_by_subj_scene <- with_probes %>%
+  group_by(ID, scene, response_frame) %>%
+  summarise(fp = any(fp)) %>%
+  group_by(ID, scene) %>%
+  summarise(fpr = mean(fp))
+
+probe_by_subj <- hr_by_subj_scene %>%
+  left_join(fp_by_subj_scene) %>%
+  group_by(ID) %>%
+  summarise(hr = mean(hr),
+            fp = mean(fpr))
+
+td_by_subj_tracker <- subject_data %>%
+  pivot_longer(cols = starts_with("td"), 
+               names_to = "tracker", 
+               values_to = "td") %>%
+  separate(tracker, c("NA", "tracker")) %>%
+  mutate(tracker = as.numeric(tracker)) %>%
+  group_by(ID, scene, tracker) %>%
+  summarise(td = first(td)) 
+
+td_by_subj_scene <- td_by_subj_tracker %>%
+  group_by(ID, scene) %>%
+  summarise(td = mean(td))
+
+td_by_scene <- td_by_subj_scene %>%
+  group_by(scene) %>%
+  summarise(td = mean(td))
+
+td_by_subj <- td_by_subj_tracker %>%
+  group_by(ID) %>%
+  summarise(td_acc_mu = mean(td),
+            n = n(),
+            td_acc_se = sd(td) / sqrt(40)) 
+
+perf_thresh = 3.0
+subject_performance <- td_by_subj %>%
+  left_join(probe_by_subj) %>%
+  mutate(passed = (td_acc_mu - 0.5) > perf_thresh*td_acc_se & (hr - fp > 0.05))
+
+# hr and fp before exclusion
+subject_performance %>%
+  summarise(hr = mean(hr),
+            fp = mean(fp))
+
+# hr and fp after exclusion
+subject_performance %>%
+  filter(passed) %>%
+  summarise(hr = mean(hr),
+            fp = mean(fp))
+
+good_subjects_data <- subject_performance %>%
+  filter(passed) %>%
+  select(ID) %>%
+  left_join(with_probes, by = "ID") %>%
+  left_join(hr_by_subj_scene) %>%
+  left_join(td_by_subj_scene, by = c("ID", "scene")) %>%
+  ungroup() 
+
+
+n_passed = sum(subject_performance$passed)
+
+```
+
+# Analysis
+
+
+```{r echo=FALSE, message=FALSE}
+
+hr_by_probe <- good_subjects_data %>%
+  # sorting out probed tracker
+  pivot_longer(cols = starts_with("probe_"), 
+               names_to = "probed_tracker_epoch",
+               values_to = "tracker") %>%
+  separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
+  mutate(probed_tracker_epoch = as.numeric(probed_tracker_epoch)) %>%
+  filter(probed_tracker_epoch == epoch & (hit | fp)) %>%
+  select(-c(hr)) %>%
+  group_by(scene, epoch, probe, tracker) %>%
+  summarise(hr = sum(hit) / n_passed,
+            td = mean(td),
+            rt = mean(delta_t),
+            n = n()) %>%
+  ungroup() %>%
+  rename(frame = probe)
+```
+
+
+```{r}
+
+run_model = function (probe_path, path) {
+  
+  data = process_grid_chains(probe_path, path) %>%
+    filter(tracker == probed_tracker) %>%
+    left_join(hr_by_probe, by = c("scene", "frame", "epoch", "tracker")) %>%
+    mutate(hr = ifelse(is.na(hr), 0, hr)) %>%
+    ungroup
+  
+  fit <- data %>%
+    with(lm(hr ~ a3_centroid,)) %>%
+    summary()
+  
+  return(fit$r.squared)
+}
+
+```
+
+```{r}
+eval_gridsearch = function (search, xs, ys) {
+  n = length(xs) * length(ys)
+  r.squared = c(1:n)
+  for (count in 1:n) {
+    mpath = sprintf("../data/gridsearch/%s/%d_att.csv", search, count)
+    r.squared[count] = run_model("../data/probes/random_probe_timings.csv",
+                                 mpath)
+  }
+  
+  cycles = c(1:n)
+  perf = c(1:n)
+  for (count in 1:n) {
+    mpath = sprintf("../data/gridsearch/%s/%d_att.csv", search, count)
+    cycles[count] <- read_csv(mpath) %>%
+      with(mean(cycles))
+    
+    mpath = sprintf("../data/gridsearch/%s/%d_perf.csv", search, count)
+    perf[count] <- read_csv(mpath) %>%
+      with(mean(td_acc))
+  }
+  
+  grid_result <- data.frame(pi = rep(xs, 4),
+                            im = rep(ys, each = 4),
+                            r.squared = r.squared,
+                            cycles = cycles,
+                            perf = perf)
+  
+  return (grid_result)
+}
+```
+
+```{r message=FALSE}
+
+# Load curve gridsearch
+x0s = c(20.0, 40.0, 60.0, 80.0)
+ms = c(0.2, 0.4, 0.6, 0.8)
+
+# Importance gridsearch
+tpis = c(0.5, 1.6, 2.83, 4.0)
+tims = c(5.0, 10.0, 15.0, 20.0)
+
+
+load_gs = eval_gridsearch("load", x0s, ms)
+imp_gs = eval_gridsearch("importance", tpis, tims)
+```
+
+```{r}
+
+fig_lc_rq <- load_gs %>%
+  ggplot(aes(x=pi, y=im, fill=r.squared)) +
+  geom_tile() +
+  guides(fill = guide_legend(title = "R2")) +
+  xlab("Intercept (x0)") + 
+ylab("Slope (m)") +
+  ggtitle("Model fit (probes)")
+
+fig_lc_ld <- load_gs %>%
+  ggplot(aes(x=pi, y=im, fill=cycles)) +
+  geom_tile() +
+  guides(fill = guide_legend(title = "Load")) +
+  xlab("Intercept (x0)") + 
+  ylab("Slope (m)") +
+  ggtitle("Load")
+
+fig_lc_pf <- load_gs %>%
+  ggplot(aes(x=pi, y=im, fill=perf)) +
+  geom_tile() +
+  guides(fill = guide_legend(title = "Accuracy")) +
+  xlab("Intercept (x0)") + 
+  ylab("Slope (m)") +
+  ggtitle("Tracking performance")
+
+fig_lc_rq
+fig_lc_ld
+fig_lc_pf
+
+ggsave("../figures/gs-lc-rq.svg", fig_lc_rq,
+     width = 4, height = 2.5)
+ggsave("../figures/gs-lc-ld.svg", fig_lc_ld,
+     width = 4, height = 2.5)
+ggsave("../figures/gs-lc-pf.svg", fig_lc_pf,
+     width = 4, height = 2.5)
+
+
+```
+
+
+```{r}
+fig_im_rq <- imp_gs %>%
+  ggplot(aes(x=pi, y=im, fill=r.squared)) +
+  geom_tile() +
+  guides(fill = guide_legend(title = "R2")) +
+  xlab("planning temp.") + 
+  ylab("importance temp.") +
+  ggtitle("Model fit (probes)")
+
+fig_im_ld <- imp_gs %>%
+  ggplot(aes(x=pi, y=im, fill=cycles)) +
+  geom_tile() +
+  guides(fill = guide_legend(title = "Load")) +
+  xlab("planning temp.") + 
+  ylab("importance temp.") +
+  ggtitle("Load")
+
+fig_im_pf <- imp_gs %>%
+  ggplot(aes(x=pi, y=im, fill=perf)) +
+  geom_tile() +
+  guides(fill = guide_legend(title = "Accuracy")) +
+  xlab("planning temp.") + 
+  ylab("importance temp.") +
+  ggtitle("Tracking performance")
+
+
+fig_im_rq
+fig_im_ld
+fig_im_pf
+
+ggsave("../figures/gs-im-rq.svg", fig_im_rq,
+     width = 4, height = 2.5)
+ggsave("../figures/gs-im-ld.svg", fig_im_ld,
+     width = 4, height = 2.5)
+ggsave("../figures/gs-im-pf.svg", fig_im_pf,
+     width = 4, height = 2.5)
+```
+

@@ -40,7 +40,7 @@ source("../scripts/process_chains.R")
 
 ## Model and Design data
 
-```{r echo=FALSE, results='hide'}
+```{r echo=FALSE, results='hide', message=FALSE}
 
 # Model design:
 # scene, frame
@@ -49,17 +49,18 @@ probe_timings <- read_csv("../data/probes/random_probe_timings.csv") %>%
   group_by(scene, frame) %>%
   summarise() %>%
   ungroup() %>%
-  mutate(probe = frame) %>%
+mutate(probe = frame) %>%
   group_by(scene) %>%
   mutate(epoch = dense_rank(frame)) %>%
-  ungroup()
+ungroup()
 
 exp_data = process_chains("../data/probes/random_probe_timings.csv",
                           "../data/probes/exp_probes_ac_td_att.csv",
                           "../data/probes/exp_probes_ac_td_dnd_centroid.csv")
 
-# covariates pre-processed by `scripts/exp1_attention_process_chains.R`
-# exp_data <- read_csv("../data/probes/model_probe_covariates_revision.csv")
+heu_data = process_chains("../data/probes/random_probe_timings.csv",
+                        "../data/probes/exp_probes_na_att.csv",
+                          "../data/probes/exp_probes_ac_td_dnd_centroid.csv")
 
 model_perf <- read_csv("../data/probes/exp_probes_ac_td_perf.csv") %>%
   group_by(scene) %>%
@@ -81,7 +82,7 @@ with_probes <- subject_data %>%
   nest_by(ID) %>%
   mutate(full = list(right_join(data, probe_timings, by = "scene"))) %>%
   select(-data) %>%
-unnest(cols = full) %>%
+  unnest(cols = full) %>%
   mutate(delta_t = response_frame - frame,
          hit = between(delta_t, 0, hit_window),
          fp = between(delta_t, hit_window+1, probe_space)) %>%
@@ -131,6 +132,9 @@ td_by_subj <- td_by_subj_tracker %>%
             td_acc_se = sd(td) / sqrt(40)) 
 
 perf_thresh = 3.0
+# uncomment to include all subjects
+# perf_thresh = 0.0
+
 subject_performance <- td_by_subj %>%
   left_join(probe_by_subj) %>%
   mutate(passed = (td_acc_mu - 0.5) > perf_thresh*td_acc_se & (hr - fp > 0.05))
@@ -174,12 +178,13 @@ conditioned on correct (4/4) target designation.
 ```{r}
 
 hr_by_probe <- good_subjects_data %>%
-  # filter(td == 1) %>%
+  # uncomment to exclude trials without perfect tracking
+  filter(td == 1.0) %>%
   # sorting out probed tracker
   pivot_longer(cols = starts_with("probe_"), 
                names_to = "probed_tracker_epoch",
                values_to = "tracker") %>%
-  separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
+separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
   mutate(probed_tracker_epoch = as.numeric(probed_tracker_epoch)) %>%
   filter(probed_tracker_epoch == epoch & (hit | fp)) %>%
   select(-c(hr)) %>%
@@ -196,9 +201,18 @@ importance_df <- exp_data %>%
   summarise(spatial_importance = sum(importance_weighted * (tracker <= 4)),
             spatial_importance_tot = sum(importance_weighted))
 
+heuristics <- heu_data %>%
+  select(scene, frame, tracker, epoch, probed_tracker, 
+         geo_centroid, dist_to_center, dist_to_nd) %>%
+  filter(tracker == probed_tracker) %>%
+  select(-probed_tracker)
+
 probe_exp_df <- exp_data %>%
+  select(scene, frame, tracker, epoch, probed_tracker, a3_centroid, 
+       importance_smoothed, cycles_smoothed, total_cycles) %>%
   filter(tracker == probed_tracker) %>%
   left_join(importance_df, by = c("scene", "epoch")) %>%
+  left_join(heuristics, by = c("scene", "frame", "epoch", "tracker")) %>%
   left_join(hr_by_probe, by = c("scene", "frame", "epoch", "tracker")) %>%
   mutate(hr = ifelse(is.na(hr), 0, hr)) %>%
   group_by(scene) %>%
@@ -329,65 +343,141 @@ probe_exp_df %>%
   ggtitle("HR ~ Origin")
 ```
 
-```{r}
+```{r Load-binning, warning=FALSE}
 
-
-nested_by_att <- probe_exp_df %>%
-mutate(att_lvl = cut_number(total_cycles, n = 4)) %>%
-  group_by(att_lvl) %>%
-  nest()
-
-ac_fits <- nested_by_att %>%
-  mutate(fit = map(data, ~ lm(hr ~ a3_centroid, data = .x)),
-         smry = map(fit, ~ summary(.x)),
-         r.squared =  map_dbl(smry, ~ .x[["r.squared"]]),
-         p.val = map_dbl(fit,~ glance(.x)[["p.value"]])) %>%
-  select(-c(data, fit, smry)) %>%
-  unnest() %>%
-  arrange(att_lvl) %>%
-  mutate(model = "ac")
-
-sp_fits <- nested_by_att %>%
-  mutate(fit = map(data, ~ lm(hr ~ spatial_importance, data = .x)),
-         smry = map(fit, ~ summary(.x)),
-         r.squared =  map_dbl(smry, ~ .x[["r.squared"]]),
-         p.val = map_dbl(fit,~ glance(.x)[["p.value"]])) %>%
-  select(-c(data, fit, smry)) %>%
-  unnest() %>%
-  arrange(att_lvl) %>%
-  mutate(model = "sp")
-
-cs_fits <- nested_by_att %>%
-  mutate(fit = map(data, ~ lm(hr ~ geo_centroid + dist_to_nd, data = .x)),
-         smry = map(fit, ~ summary(.x)),
-         r.squared =  map_dbl(smry, ~ .x[["r.squared"]]),
-         p.val = map_dbl(fit,~ glance(.x)[["p.value"]])) %>%
-  select(-c(data, fit, smry)) %>%
-  unnest() %>%
-  arrange(att_lvl) %>%
-  mutate(model = "tc + nd")
-
-tc_fits <- nested_by_att %>%
-  mutate(fit = map(data, ~ lm(hr ~ geo_centroid, data = .x)),
-         smry = map(fit, ~ summary(.x)),
-         r.squared =  map_dbl(smry, ~ .x[["r.squared"]]),
-         p.val = map_dbl(fit,~ glance(.x)[["p.value"]])) %>%
-  select(-c(data, fit, smry)) %>%
-  unnest() %>%
-  arrange(att_lvl) %>%
-  mutate(model = "tc")
-
-all_fits <- bind_rows(list(ac_fits,
-                           # sp_fits,
-                           cs_fits,
-                           tc_fits)) %>%
-  arrange(att_lvl)
-all_fits
-
-all_fits %>%
-  ggplot(aes(x = as.integer(att_lvl), y = r.squared, color = model)) + 
-  geom_line()
+bin_by_load <- function (data) {
+   nested_by_att <- data %>%
+    mutate(att_lvl = cut_number(total_cycles, n = 3)) %>%
+    group_by(att_lvl) %>%
+    nest()
   
+  ac_fits <- nested_by_att %>%
+    mutate(fit = map(data, ~ lm(hr ~ a3_centroid, data = .x)),
+           smry = map(fit, ~ summary(.x)),
+           r.squared =  map_dbl(smry, ~ .x[["r.squared"]]),
+           p.val = map_dbl(fit,~ glance(.x)[["p.value"]])) %>%
+    select(-c(data, fit, smry)) %>%
+    unnest() %>%
+    arrange(att_lvl) %>%
+    mutate(model = "ac")
+  
+
+  
+  tc_fits <- nested_by_att %>%
+    mutate(fit = map(data, ~ lm(hr ~ geo_centroid, data = .x)),
+           smry = map(fit, ~ summary(.x)),
+           r.squared =  map_dbl(smry, ~ .x[["r.squared"]]),
+           p.val = map_dbl(fit,~ glance(.x)[["p.value"]])) %>%
+    select(-c(data, fit, smry)) %>%
+    unnest() %>%
+    arrange(att_lvl) %>%
+    mutate(model = "tc")
+  
+  nd_fits <- nested_by_att %>%
+    mutate(fit = map(data, ~ lm(hr ~ dist_to_nd, data = .x)),
+           smry = map(fit, ~ summary(.x)),
+           r.squared =  map_dbl(smry, ~ .x[["r.squared"]]),
+           p.val = map_dbl(fit,~ glance(.x)[["p.value"]])) %>%
+    select(-c(data, fit, smry)) %>%
+    unnest() %>%
+    arrange(att_lvl) %>%
+    mutate(model = "nd")
+  
+   or_fits <- nested_by_att %>%
+    mutate(fit = map(data, ~ lm(hr ~ dist_to_center, data = .x)),
+           smry = map(fit, ~ summary(.x)),
+           r.squared =  map_dbl(smry, ~ .x[["r.squared"]]),
+           p.val = map_dbl(fit,~ glance(.x)[["p.value"]])) %>%
+    select(-c(data, fit, smry)) %>%
+    unnest() %>%
+    arrange(att_lvl) %>%
+    mutate(model = "or")
+  
+  
+  all_fits <- bind_rows(list(ac_fits,
+                             tc_fits,
+                             nd_fits,
+                             or_fits)) %>%
+    arrange(att_lvl, model)
+}
+
+
+univariate_test <- function(data, indices) {
+  d = data[indices,] # sample trials with replacement 
+  
+  result <- bin_by_load(d)
+  
+  return(result$r.squared) #return explained variance
+}
+
+# reps <- boot(data=probe_exp_df,
+#              statistic=univariate_test,
+#              R=10000,
+#              ncpus = 2,
+#              parallel = "multicore")
+
+
+all_fits = bin_by_load(probe_exp_df)
+load_levels = levels(all_fits$att_lvl)
+nlevels = length(load_levels)
+lows = c(nlevels * 4)
+highs = c(nlevels * 4)
+sds = c(nlevels * 4)
+# for (i in 1:nlevels) {
+# print(sprintf("Level %d, range: %s", i, load_levels[i]))
+# idx = (i-1) * 4 + 1
+# 
+# # ac_qs = quantile(reps$t[, idx], probs = c(0.025, 0.5, 0.975))
+# # lows[idx] = ac_qs[1]
+# # highs[idx] = ac_qs[3]
+# # sds[idx] = sd(reps$t[, idx])
+# # 
+# # tc_qs = quantile(reps$t[, idx+1], probs = c(0.025, 0.5, 0.975))
+# # lows[idx+1] = tc_qs[1]
+# # highs[idx+1] = tc_qs[3]
+# # sds[idx+1] = sd(reps$t[, idx+1])
+# # 
+# # cc_qs = quantile(reps$t[, idx+2], probs = c(0.025, 0.5, 0.975))
+# # lows[idx+2] = cc_qs[1]
+# # highs[idx+2] = cc_qs[3]
+# # sds[idx+2] = sd(reps$t[, idx+2])
+# 
+# print("AC vs ND")
+# print(quantile(reps$t[, idx] - reps$t[,idx+1], probs = c(0.025, 0.5, 0.975)))
+# print(paste("p =", mean(reps$t[,idx] < reps$t[,idx+1])))
+# 
+# print("AC vs OR")
+# print(quantile(reps$t[,idx] - reps$t[,idx+2], probs = c(0.025, 0.5, 0.975)))
+# print(paste("p =", mean(reps$t[,idx] < reps$t[,idx+2])))
+# 
+# print("AC vs TC")
+# print(quantile(reps$t[,idx] - reps$t[,idx+3], probs = c(0.025, 0.5, 0.975)))
+# print(paste("p =", mean(reps$t[,idx] < reps$t[,idx+3])))
+# }
+
+
+# all_fits$sds = sds / sqrt(length(reps[, 1]))
+# all_fits$lows = lows
+# all_fits$highs = highs
+
+fig_load_bins <- all_fits %>%
+ggplot(aes(x = as.integer(att_lvl), y = r.squared, color = model)) + 
+geom_line(size=1.0) + 
+scale_color_manual(values = c("ac" = "#5aa67b",
+                              "tc" = "darkgrey",
+                              "nd" = "lightgrey",
+                              "or" = "grey"))
+# geom_errorbar(aes(ymin = r.squared - sds, ymax = r.squared + sds), 
+# geom_errorbar(aes(ymin = lows, ymax =highs), 
+#               width=0.125)
+
+fig_load_bins
+
+# ggsave("../figures/load_bins.svg", fig_load_bins,
+#        width = 400, height = 300, units = "mm")
+
+
+
 
 ```
 
@@ -404,7 +494,7 @@ probe_exp_df %>%
 print("Raw allocated steps")
 probe_exp_df %>%
   with(lm(hr ~ cycles_smoothed,)) %>%
-  summary()
+summary()
 
 print("Spatial Importannce")
 probe_exp_df %>%
@@ -423,7 +513,7 @@ probe_exp_df %>%
 
 print("Distance to nearest distractor")
 probe_exp_df %>%
-  with(lm(hr ~ dist_to_nd,)) %>%
+with(lm(hr ~ dist_to_nd,)) %>%
   summary()
 
 print("Distance to origin")
@@ -630,12 +720,15 @@ univ_fig <- function() {
           )
 }
 
-
-fig2 <- withr::with_options(
+withr::with_options(
   list(ggplot2.discrete.fill = c("#5aa67b", "darkgrey")),
   print(univ_fig())
-  # ggsave("fig2_c.svg", plot=univ_fig())
 )
+
+# fig2 <- withr::with_options(
+#   list(ggplot2.discrete.fill = c("#5aa67b", "darkgrey")),
+#   ggsave("fig2_c.svg", plot=univ_fig())
+# )
 # fig2
 
 ```
@@ -817,7 +910,7 @@ fig2_e <- resid_results %>%
           axis.title = element_blank(),
         aspect.ratio = 1.3
           )
-# ggsave("fig2_e.svg", plot=fig2_d)
+# ggsave("fig2_e.svg", plot=fig2_e)
 
 fig2_e
 ```

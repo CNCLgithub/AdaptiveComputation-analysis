@@ -28,6 +28,7 @@ knitr::opts_chunk$set(fig.pos = 'H',
 # install.packages("boot")
 library(tidyverse)
 library(boot)
+library(broom)
 
 th <- theme_classic()
 theme_set(th)
@@ -49,6 +50,9 @@ model_att <- read_csv("../data/effort/exp_effort_ac_td_att.csv")
 model_perf <- read_csv("../data/effort/exp_effort_ac_td_perf.csv")
 
 avg_cycles <- mean(model_att$cycles)
+
+sprintf("Average model performance: %0.3f", mean(model_perf$td_acc))
+sprintf("Average model load: %0.3f",  mean(model_att$cycles))
   
 ```
 
@@ -190,9 +194,13 @@ good_full_data %>%
   ggtitle("human acc ~ velocity + distractors")
 
 good_full_data %>%
-ggplot(aes(x=vel, y=n_dist, z=td_model)) +
+  ggplot(aes(x=vel, y=n_dist, z=td_model)) +
   stat_summary_2d(breaks=breaks) +
   ggtitle("model acc ~ velocity + distractors")
+
+
+
+
 ```
 
 ```{r univariate accuracy}
@@ -573,3 +581,114 @@ resid_results %>%
         aspect.ratio = 2.
         )
 ```
+
+
+### Comparison to fixed-processing model
+
+```{r}
+
+sprintf("Average model performance: %0.3f", mean(model_perf$td_acc))
+sprintf("Average model load: %0.3f",  mean(model_att$cycles))
+
+na_match_perf_perf <- read_csv("../data/accuracy/exp_effort_na_acc_perf.csv")
+sprintf("No attention matched performance: %0.3f", mean(na_match_perf_perf$td_acc))
+
+na_match_load_perf <- read_csv("../data/accuracy/exp_effort_na_load_perf.csv")
+
+fixed_model_comp_perf <- na_match_load_perf %>%
+  group_by(scene) %>%
+  summarise(td_no_att = mean(td_acc)) %>%
+  left_join(good_full_data, by = "scene") %>%
+  mutate(perf_ratio = td_model / td_no_att)
+
+print("Comparing accuracy between AC and fixed model: \n")
+fixed_model_comp_perf %>%
+  with(t.test(td_model / td_no_att, mu = 1.0))
+
+fig_effort_perf_ratio <- fixed_model_comp_perf %>%
+  ggplot(aes(x=vel, y=n_dist, z=perf_ratio)) +
+  stat_summary_2d(breaks=breaks) +
+  scale_fill_gradient2(
+    low = "blue", 
+    mid = "white", 
+    high = "red", 
+    midpoint = 1.0,
+    name = "Ratio\n(AC / Fixed)"
+  ) +
+  xlab("Object speeds (world units / s)") + 
+  ylab("Number of distractors") +
+  ggtitle("Performance ratio across difficulty")
+
+fig_effort_perf_ratio
+# ggsave("~/project/figures/fig_effort_perf_ratio.svg", 
+#        plot=fig_effort_perf_ratio, 
+#        width = 4, height = 2.5)
+
+jmin = 5 # minimum number of steps per object; @ scripts/experiments/effort/td.json
+jfixed = 10 #  number of steps per object; @ scripts/experiments/effort/na_perf.json
+
+
+model_load_by_scene <- model_att %>%
+  group_by(scene) %>%
+  summarise(load = mean(cycles))  %>%
+  left_join(good_full_data, by = "scene") %>%
+  mutate(load_ratio = (load + jmin) / jfixed)
+
+print("Comparing load between AC and fixed model: \n")
+model_load_by_scene %>%
+  with(t.test((load + jmin) / jfixed, mu = 1.0))
+
+fig_effort_load_ratio <- model_load_by_scene %>%
+  ggplot(aes(x=vel, y=n_dist, z=load_ratio)) +
+  stat_summary_2d(breaks=breaks) +
+  scale_fill_gradient2(
+    low = "blue", 
+    mid = "white", 
+    high = "red", 
+    midpoint = 1.0,
+    name = "Ratio\n(AC / Fixed)"
+  ) +
+  xlab("Object speeds (world units / s)") + 
+  ylab("Number of distractors") +
+  ggtitle("Load ratio across difficulty")
+
+fig_effort_load_ratio
+# ggsave("~/project/figures/fig_effort_load_ratio.svg", 
+#        plot=fig_effort_load_ratio, 
+#        width = 4, height = 2.5)
+```
+
+### Looking at perfect trial responses
+
+In this section, we only look at effort judgements where the subject correctly
+tracked all targets. This is one way to decouple objective performance from
+effort ratings (since all responses had the same accuracy).
+
+```{r, warning=FALSE}
+
+
+perfect_trials <- good_td_by_subj_tracker %>%
+  filter(td == 1.0) %>%
+  group_by(scene) %>%
+  summarise(effort = mean(effort)) %>%
+  left_join(model_cov_by_scene, by = "scene")
+  
+
+perfect_trials_fit <- perfect_trials %>%
+  with(lm(effort ~ arousal)) %>%
+  summary()
+
+perfect_trials_fit
+
+fig_perfect_trials <- perfect_trials %>%
+  ggplot(aes(x=scale(arousal), y=effort)) +
+  geom_point(color = "#5aa67b", size = 3.1) + 
+  geom_smooth(method = "lm", color = "black") +
+  theme_classic() + 
+  theme(legend.position = "none",
+        axis.ticks = element_blank(),
+        axis.title = element_blank())
+        
+fig_perfect_trials
+```
+

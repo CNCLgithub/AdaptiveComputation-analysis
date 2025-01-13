@@ -131,10 +131,10 @@ fig4_a2 <- staircase_df %>%
   ggtitle("Perceptual computations across target count")
 
 
-# ggsave("~/project/figures/fig4_a1.svg", plot=fig4_a1,
-#      height = 3, width = 4)
-# ggsave("~/project/figures/fig4_a2.svg", plot=fig4_a2,
-#      height = 3, width = 4)
+ggsave("~/project/figures/exp3_speed_thresh.svg", plot=fig4_a1,
+   height = 3, width = 4)
+ggsave("~/project/figures/exp3_speed_load.svg", plot=fig4_a2,
+   height = 3, width = 4)
 
 fig4_a1
 fig4_a2
