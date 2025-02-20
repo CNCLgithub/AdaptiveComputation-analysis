@@ -27,14 +27,20 @@ library(tidyverse)
 library(ggplot2)
 library(readr)
 library(boot)
+library(broom)
 
 th <- theme_classic()
 theme_set(th)
 ```
 
+```{r}
+
+source("../scripts/process_chains.R")
+```
+
 ## Model and Design data
 
-```{r echo=FALSE, results='hide'}
+```{r echo=FALSE, results='hide', message=FALSE}
 
 # Model design:
 # scene, frame
@@ -48,10 +54,18 @@ probe_timings <- read_csv("../data/probes/random_probe_timings.csv") %>%
   mutate(epoch = dense_rank(frame)) %>%
   ungroup()
 
-# covariates pre-processed by `scripts/exp1_attention_process_chains.R`
-exp_data <- read_csv("../data/probes/probe_covariates.csv")
+exp_data = process_chains("../data/probes/random_probe_timings.csv",
+                          "../data/probes/exp_probes_ac_td_att.csv",
+                          "../data/probes/exp_probes_ac_td_dnd_centroid.csv",
+                          "../data/probes/exp_probes_dis_cov.csv")
 
-model_perf <- read_csv("../data/probes/ac_td_perf.csv") %>%
+heu_data = process_chains("../data/probes/random_probe_timings.csv",
+                          "../data/probes/exp_probes_na_att.csv",
+                          "../data/probes/exp_probes_ac_td_dnd_centroid.csv",
+                          "../data/probes/exp_probes_dis_cov.csv")
+
+
+model_perf <- read_csv("../data/probes/exp_probes_ac_td_perf.csv") %>%
   group_by(scene) %>%
   summarise(td = mean(td_acc))
 ```
@@ -61,7 +75,7 @@ model_perf <- read_csv("../data/probes/ac_td_perf.csv") %>%
 screen bad subjects
 
 ```{r echo=TRUE, results='hide'}
-subject_data <- read_csv("../data/exp_probes/parsed_trials.csv") %>%
+subject_data <- read_csv("../data/probes/parsed_trials.csv") %>%
   select(-c(WID)) %>%
   replace_na(list(response_frame = Inf))
 
@@ -121,6 +135,9 @@ td_by_subj <- td_by_subj_tracker %>%
             td_acc_se = sd(td) / sqrt(40)) 
 
 perf_thresh = 3.0
+# uncomment to include all subjects
+# perf_thresh = 0.0
+
 subject_performance <- td_by_subj %>%
   left_join(probe_by_subj) %>%
   mutate(passed = (td_acc_mu - 0.5) > perf_thresh*td_acc_se & (hr - fp > 0.05))
@@ -151,7 +168,7 @@ n_passed = sum(subject_performance$passed)
 
 # Analysis
 
-## Causal effects
+## Combining human and model covariates
 
 First collect all data points (no averaging across scene)
 
@@ -164,11 +181,13 @@ conditioned on correct (4/4) target designation.
 ```{r}
 
 hr_by_probe <- good_subjects_data %>%
+  # uncomment to exclude trials without perfect tracking
+  # filter(td == 1.0) %>%
   # sorting out probed tracker
   pivot_longer(cols = starts_with("probe_"), 
                names_to = "probed_tracker_epoch",
                values_to = "tracker") %>%
-  separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
+separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
   mutate(probed_tracker_epoch = as.numeric(probed_tracker_epoch)) %>%
   filter(probed_tracker_epoch == epoch & (hit | fp)) %>%
   select(-c(hr)) %>%
@@ -185,9 +204,18 @@ importance_df <- exp_data %>%
   summarise(spatial_importance = sum(importance_weighted * (tracker <= 4)),
             spatial_importance_tot = sum(importance_weighted))
 
-ate_by_probe <- exp_data %>%
+heuristics <- heu_data %>%
+  select(scene, frame, tracker, epoch, probed_tracker, 
+         geo_centroid, dist_to_center, dist_to_nd, dis_center) %>%
+  filter(tracker == probed_tracker) %>%
+  select(-probed_tracker)
+
+probe_exp_df <- exp_data %>%
+  select(scene, frame, tracker, epoch, probed_tracker, a3_centroid, 
+       importance_smoothed, cycles_smoothed, total_cycles) %>%
   filter(tracker == probed_tracker) %>%
   left_join(importance_df, by = c("scene", "epoch")) %>%
+  left_join(heuristics, by = c("scene", "frame", "epoch", "tracker")) %>%
   left_join(hr_by_probe, by = c("scene", "frame", "epoch", "tracker")) %>%
   mutate(hr = ifelse(is.na(hr), 0, hr)) %>%
   group_by(scene) %>%
@@ -204,12 +232,25 @@ subject_performance %>%
   ggplot(aes(x = factor(ID), y = hr - fp)) +
   geom_col()
 
-model_perf %>%
-  rename(model_td = td) %>%
-  left_join(td_by_scene) %>%
-  summarise(td = mean(td),
-            model_td = mean(model_td))
 
+  
+human_td_acc = subject_performance %>%
+  filter(passed) %>%
+  with(mean(td_acc_mu))
+
+model_td_acc = model_perf %>%
+  with(mean(td))
+
+sprintf("Human acc: %0.3f; Model acc: %0.3f", human_td_acc, model_td_acc)
+
+
+subject_performance %>%
+  filter(passed) %>%
+  ggplot(aes(x  = td_acc_mu)) + 
+  geom_histogram(bins = 15) + 
+  geom_vline(xintercept = model_td_acc) + 
+  xlim(0.5, 1.0) + 
+  xlab("Human tracking accuracy")
 
 ```
 
@@ -226,27 +267,27 @@ using... TODO
 scene_select = 39
 
 
-ate_by_probe %>%
+probe_exp_df %>%
   ggplot(aes(x = importance_smoothed, y = hr)) +
   geom_point( aes(color = cycles_smoothed), size = 3.1) + 
   geom_smooth(color = "black", method="lm") +
-  geom_text(aes(label =paste(scene, frame, tracker))) +
+  # geom_text(aes(label =paste(scene, frame, tracker))) +
   # geom_text(aes(label = ifelse(scene == scene_select, paste(scene, frame, tracker), ""))) +
   theme_classic() +
   ggtitle("HR ~ Direct importance")
 
-ate_by_probe %>%
+probe_exp_df %>%
   # filter(cycles_smoothed > 4) %>%
   ggplot(aes(x = log(importance_smoothed), y = hr)) +
   geom_point(size = 3.1, aes(color = cycles_smoothed)) + 
   geom_smooth(color = "black", method="lm") +
-  geom_text(aes(label =paste(scene, frame, tracker))) +
+  # geom_text(aes(label =paste(scene, frame, tracker))) +
   # geom_text(aes(label = ifelse(scene == scene_select, paste(scene, frame, tracker), ""))) +
   theme_classic() +
   ggtitle("HR ~ Direct importance")
 
 
-ate_by_probe %>%
+probe_exp_df %>%
   ggplot(aes(x = spatial_importance, y = hr, label = paste(scene, frame, tracker))) +
   geom_point(color = "#5aa67b", size = 3.1) + 
   # geom_text() + 
@@ -254,7 +295,7 @@ ate_by_probe %>%
   theme_classic() +
   ggtitle("HR ~ Target Spatial importance")
 
-ate_by_probe %>%
+probe_exp_df %>%
   ggplot(aes(x = spatial_importance, y = hr, label = paste(scene, frame, tracker))) +
   geom_point(color = "#5aa67b", size = 3.1) + 
   # geom_text() + 
@@ -263,7 +304,7 @@ ate_by_probe %>%
   ggtitle("HR ~ Global Spatial importance")
 
 
-ate_by_probe %>%
+probe_exp_df %>%
   ggplot(aes(x = cycles_smoothed, y = hr)) +
   geom_point(color = "#5aa67b", size = 3.1) +
   geom_smooth(method = "lm", color = "black") +
@@ -271,7 +312,7 @@ ate_by_probe %>%
   ggtitle("HR ~ Direct cycles")
 
 
-ate_by_probe %>%
+probe_exp_df %>%
   ggplot(aes(x = a3_centroid, y = hr)) +
   geom_point(size = 3.1,
              color = "#5aa67b",
@@ -280,71 +321,80 @@ ate_by_probe %>%
   # geom_text(aes(label =paste(scene, frame, tracker))) +
   geom_smooth(method = "lm", color = "black") +
   theme_classic() +
+  facet_wrap(vars(cycles_smoothed > 1)) +
   ggtitle("HR ~ Target Attention Centroid")
 
 
 
-ate_by_probe %>%
+probe_exp_df %>%
   ggplot(aes(x = geo_centroid, y = hr)) +
   geom_point() + 
   geom_smooth(method="lm") +
   # geom_text(aes(label = paste(scene, frame, tracker))) +
-  geom_text(aes(label = ifelse(scene == scene_select, paste(scene, frame, tracker), ""))) +
+  # geom_text(aes(label = ifelse(scene == scene_select, paste(scene, frame, tracker), ""))) +
+  facet_wrap(vars(cycles_smoothed > 1)) +
   ggtitle("HR ~ Target Center")
 
-ate_by_probe %>%
+probe_exp_df %>%
   ggplot(aes(x = dist_to_nd, y = hr)) +
   geom_point() + 
   ggtitle("HR ~ Nearest Distractor")
 
-ate_by_probe %>%
+probe_exp_df %>%
   ggplot(aes(x = dist_to_center, y = hr)) +
   geom_point() + 
   ggtitle("HR ~ Origin")
 ```
+
 
 Linear model fitting and bootstrap analysis
 
 ```{r Univariate linear fits}
 
 print("Raw importance")
-ate_by_probe %>%
+probe_exp_df %>%
   with(lm(hr ~ importance_smoothed)) %>%
   summary()
 
 print("Raw allocated steps")
-ate_by_probe %>%
+probe_exp_df %>%
   with(lm(hr ~ cycles_smoothed,)) %>%
-  summary()
+summary()
 
 print("Spatial Importannce")
-ate_by_probe %>%
+probe_exp_df %>%
   with(lm(hr ~ spatial_importance,)) %>%
   summary()
 
 print("Target attention centroid")
-ate_by_probe %>%
+probe_exp_df %>%
   with(lm(hr ~ a3_centroid,)) %>%
   summary()
 
 print("Target center")
-ate_by_probe %>%
+probe_exp_df %>%
   with(lm(hr ~ geo_centroid,)) %>%
   summary()
 
 print("Distance to nearest distractor")
-ate_by_probe %>%
-  with(lm(hr ~ dist_to_nd,)) %>%
+probe_exp_df %>%
+with(lm(hr ~ dist_to_nd,)) %>%
   summary()
 
 print("Distance to origin")
-ate_by_probe %>%
+probe_exp_df %>%
   with(lm(hr ~ dist_to_center,)) %>%
+  summary()
+
+
+print("Distance to distractor center")
+probe_exp_df %>%
+  with(lm(hr ~ dis_center,)) %>%
   summary()
 ```
 
 ```{r Fig 2B}
-fig2_b <- ate_by_probe %>%
+fig2_b <- probe_exp_df %>%
   ggplot(aes(x = a3_centroid, y = hr)) +
   geom_point(color = "#5aa67b", size = 3.1) + 
   geom_smooth(method = "lm", color = "black") +
@@ -370,13 +420,15 @@ univariate_test <- function(data, indices) {
   tc = d %>% with(lm(hr ~ geo_centroid)) %>% summary
   nd = d %>% with(lm(hr ~ dist_to_nd)) %>% summary
   or = d %>% with(lm(hr ~ dist_to_center)) %>% summary
+  dc = d %>% with(lm(hr ~ dis_center)) %>% summary
   result <- c(ac$r.squared,
               tc$r.squared,
               nd$r.squared,
               or$r.squared,
               di$r.squared,
               si$r.squared,
-              ds$r.squared)
+              ds$r.squared,
+              dc$r.squared)
   return(result) #return explained variance
 }
 
@@ -384,7 +436,7 @@ univ_boostrap_steps = 10000
 ```
 
 ```{r univariate bootstraps}
-reps <- boot(data=ate_by_probe, 
+reps <- boot(data=probe_exp_df, 
              statistic=univariate_test,
              R=univ_boostrap_steps, 
              ncpus = 8,
@@ -411,6 +463,9 @@ univ_cis_hr_si <- boot.ci(reps, type="perc", index=6) # si
 univ_cis_hr_si$mu <- mean(reps$t[,6])
 univ_cis_hr_ds <- boot.ci(reps, type="perc", index=7) # si
 univ_cis_hr_ds$mu <- mean(reps$t[,7])
+univ_cis_hr_dc <- boot.ci(reps, type="perc", index=8) # si
+univ_cis_hr_dc$mu <- mean(reps$t[,8])
+
 ```
 
 ## Comparing models
@@ -421,104 +476,25 @@ The test uses a random sample of subjects (with replacement) to measure
 the frequency of the attention centroid producing a higher absolute
 correlation to a given heuristic model.
 
-```{r test definition}
-dbht_function <- function(data, indices) {
-  d = data[indices,] # sample trials with replacement 
-  ac_r <- cor.test(~ hr + a3_centroid, data = d)
-  tc_r <- cor.test(~ hr + geo_centroid, data = d)
-  nd_r <- cor.test(~ hr + dist_to_nd, data = d)
-  or_r <- cor.test(~ hr + dist_to_center, data = d)
-  result <- c(abs(ac_r$estimate) > abs(tc_r$estimate),
-            abs(ac_r$estimate) > abs(nd_r$estimate),
-              abs(ac_r$estimate) > abs(or_r$estimate))
-  return(result)
-}
-
-dbht_steps = 10000
-```
 
 ```{r Attention centroid vs heuristics}
-set.seed(0)
 
-reps <- boot(data=ate_by_probe, 
-             statistic=dbht_function,
-             R=dbht_steps, 
-             ncpus = 8, 
-           parallel = "multicore")
+print("AC vs TC")
+quantile(reps$t[,1] - reps$t[,2], probs = c(0.025, 0.5, 0.975))
+print(paste("p =", mean(reps$t[,1] < reps$t[,2])))
 
-#calculate pval
-dbht_tc_p_val = 1.0 - (sum(reps$t[, 1]) / reps$R)
-dbht_tc_p_val
-dbht_nd_p_val = 1.0 - (sum(reps$t[, 2]) / reps$R)
-dbht_nd_p_val
-dbht_or_p_val = 1.0 - (sum(reps$t[, 3]) / reps$R)
-dbht_or_p_val
-```
+print("AC vs ND")
+quantile(reps$t[,1] - reps$t[,3], probs = c(0.025, 0.5, 0.975))
+print(paste("p =", mean(reps$t[,1] < reps$t[,3])))
 
-Computing subject split half correlation (r-squared) to define upper
-threshold of explainable variance by each model.
+print("AC vs OR")
+quantile(reps$t[,1] - reps$t[,4], probs = c(0.025, 0.5, 0.975))
+print(paste("p =", mean(reps$t[,1] < reps$t[,4])))
 
-```{r  split half correlation}
-subj_data_nested <- good_subjects_data %>%
-  ungroup() %>%
-  # sorting out probed tracker
-  pivot_longer(cols = starts_with("probe_"),
-               names_to = "probed_tracker_epoch",
-               values_to = "tracker") %>%
-  separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
-  mutate(probed_tracker_epoch = as.numeric(probed_tracker_epoch)) %>%
-  group_by(ID, scene, probe, epoch, probed_tracker_epoch, tracker) %>%
-  filter(probed_tracker_epoch == epoch, hit | fp) %>%
-  ungroup() %>%
-  select(ID, scene, epoch, probe, tracker, probed_tracker_epoch, hit) %>%
-  nest_by(ID)
+print("AC vs DC")
+quantile(reps$t[,1] - reps$t[,8], probs = c(0.025, 0.5, 0.975))
+print(paste("p =", mean(reps$t[,1] < reps$t[,8])))
 
-group_perf <- function(group, gname) {
-  k = nrow(group)
-  d <- group %>%
-    unnest(cols = c(ID, data)) %>%
-    group_by(scene, epoch, probe, tracker) %>%
-    summarise(hr = sum(hit) / k,
-              .groups = "keep",) %>%
-    ungroup %>%
-    mutate(frame = probe)
-  
-  result <- probe_timings %>%
-    select(scene, frame) %>%
-    left_join(d, by = c("scene", "frame")) %>%
-    mutate(hr = ifelse(is.na(hr), 0, hr)) %>%
-    select(scene, frame, hr) %>%
-    mutate(g = gname)
-
-  return(result)
-}
-
-split_half_cor <- function(data, indices) {
-  d <- data.frame(data)
-  nr = length(indices)
-  groups <- split(indices, 
-                  cut(seq_along(indices), 2, labels = FALSE))
-  gai = groups[[1]]
-  gbi = groups[[2]]
-  group_a <- group_perf(d[gai,], "a")
-  group_b <- group_perf(d[gbi,], "b")
-  df <- rbind(group_a, group_b) %>%
-    pivot_wider(names_from = g,
-                values_from = hr)
-  fit <- df %>% with(lm(a ~ b)) %>% summary
-  return (fit$r.square)
-}
-reps <- boot(data = subj_data_nested, 
-             statistic=split_half_cor,
-             sim = "ordinary",
-             R=5000,
-             ncpus = 8,
-             parallel = "multicore",
-             )
-shc_plot <- plot(reps)
-shc_probe_hr_ci <- boot.ci(reps, type="all")
-shc_probe_hr_ci
-shc_probe_hr_ci$mu <- mean(reps$t)
 ```
 
 Across all comparisons, the attention centroid forms a stronger
@@ -557,12 +533,15 @@ univ_fig <- function() {
           )
 }
 
-
-fig2 <- withr::with_options(
+withr::with_options(
   list(ggplot2.discrete.fill = c("#5aa67b", "darkgrey")),
   print(univ_fig())
-  # ggsave("fig2_c.svg", plot=univ_fig())
 )
+
+# fig2 <- withr::with_options(
+#   list(ggplot2.discrete.fill = c("#5aa67b", "darkgrey")),
+#   ggsave("fig2_c.svg", plot=univ_fig())
+# )
 # fig2
 
 ```
@@ -614,7 +593,7 @@ res_bootstrap_steps = 10000
 ```
 
 ```{r Results}
-reps <- boot(data=ate_by_probe, 
+reps <- boot(data=probe_exp_df, 
        statistic=residual_test, 
              R=res_bootstrap_steps, 
              ncpus = 8,  parallel = "multicore")
@@ -687,9 +666,24 @@ resid_results <-data.frame(model = c(rep("ac", each=3), "tc", "nd", "or"),
                            )
 
 resid_results
-ac_vs_tc_pval
-ac_vs_nd_pval
-ac_vs_or_pval
+
+  # result <- c(res_tc_ac, res_nd_ac, res_or_ac, # R2 of AC
+  #             res_ac_tc, res_ac_nd, res_ac_or, # R2 of heuristics
+  #             ac_vs_tc, ac_vs_nd, ac_vs_or)    # pval for hypothesis testing
+
+
+print("AC vs TC")
+quantile(reps$t[,1] - reps$t[,7], probs = c(0.025, 0.5, 0.975))
+print(paste("p =", mean(reps$t[,1] < reps$t[,7])))
+
+print("AC vs ND")
+quantile(reps$t[,1] - reps$t[,9], probs = c(0.025, 0.5, 0.975))
+print(paste("p =", mean(reps$t[,1] < reps$t[,9])))
+
+print("AC vs OR")
+quantile(reps$t[,1] - reps$t[,11], probs = c(0.025, 0.5, 0.975))
+print(paste("p =", mean(reps$t[,1] < reps$t[,11])))
+
 ```
 
 ```{r Fig 2D-ii}
@@ -710,7 +704,7 @@ fig2_d <- resid_results %>%
         aspect.ratio = 1.3
         )
 
-ggsave("fig2_d.svg", plot=fig2_d)
+# ggsave("fig2_d.svg", plot=fig2_d)
 fig2_d
 
 ```
@@ -729,49 +723,373 @@ fig2_e <- resid_results %>%
           axis.title = element_blank(),
         aspect.ratio = 1.3
           )
-ggsave("fig2_e.svg", plot=fig2_d)
+# ggsave("fig2_e.svg", plot=fig2_e)
 
 fig2_e
 ```
 
 ## SI
 
+### Load binning
+
+
+```{r Load-binning, warning=FALSE}
+
+bin_by_load <- function (data) {
+   nested_by_att <- data %>%
+    mutate(att_lvl = cut_number(total_cycles, n = 3)) %>%
+    group_by(att_lvl) %>%
+    nest()
+  
+  ac_fits <- nested_by_att %>%
+    mutate(fit = map(data, ~ lm(hr ~ a3_centroid, data = .x)),
+           smry = map(fit, ~ summary(.x)),
+           r.squared =  map_dbl(smry, ~ .x[["r.squared"]]),
+           p.val = map_dbl(fit,~ glance(.x)[["p.value"]])) %>%
+    select(-c(data, fit, smry)) %>%
+    unnest() %>%
+    arrange(att_lvl) %>%
+    mutate(model = "ac")
+  
+
+  
+  tc_fits <- nested_by_att %>%
+    mutate(fit = map(data, ~ lm(hr ~ geo_centroid, data = .x)),
+           smry = map(fit, ~ summary(.x)),
+           r.squared =  map_dbl(smry, ~ .x[["r.squared"]]),
+           p.val = map_dbl(fit,~ glance(.x)[["p.value"]])) %>%
+    select(-c(data, fit, smry)) %>%
+    unnest() %>%
+    arrange(att_lvl) %>%
+    mutate(model = "tc")
+  
+  nd_fits <- nested_by_att %>%
+    mutate(fit = map(data, ~ lm(hr ~ dist_to_nd, data = .x)),
+           smry = map(fit, ~ summary(.x)),
+           r.squared =  map_dbl(smry, ~ .x[["r.squared"]]),
+           p.val = map_dbl(fit,~ glance(.x)[["p.value"]])) %>%
+    select(-c(data, fit, smry)) %>%
+    unnest() %>%
+    arrange(att_lvl) %>%
+    mutate(model = "nd")
+  
+   or_fits <- nested_by_att %>%
+    mutate(fit = map(data, ~ lm(hr ~ dist_to_center, data = .x)),
+           smry = map(fit, ~ summary(.x)),
+           r.squared =  map_dbl(smry, ~ .x[["r.squared"]]),
+           p.val = map_dbl(fit,~ glance(.x)[["p.value"]])) %>%
+    select(-c(data, fit, smry)) %>%
+    unnest() %>%
+    arrange(att_lvl) %>%
+    mutate(model = "or")
+  
+  
+  all_fits <- bind_rows(list(ac_fits,
+                             tc_fits,
+                             nd_fits,
+                             or_fits)) %>%
+    arrange(att_lvl, model)
+}
+
+
+univariate_test <- function(data, indices) {
+  d = data[indices,] # sample trials with replacement 
+  
+  result <- bin_by_load(d)
+  
+  return(result$r.squared) #return explained variance
+}
+
+reps <- boot(data=probe_exp_df,
+             statistic=univariate_test,
+             R=10000,
+             ncpus = 6,
+             parallel = "multicore")
+
+
+all_fits = bin_by_load(probe_exp_df)
+load_levels = levels(all_fits$att_lvl)
+nlevels = length(load_levels)
+lows = c(nlevels * 4)
+highs = c(nlevels * 4)
+sds = c(nlevels * 4)
+for (i in 1:nlevels) {
+  print(sprintf("Level %d, range: %s", i, load_levels[i]))
+  idx = (i-1) * 4 + 1
+  
+  print("AC 95% CI:")
+  print(quantile(reps$t[,idx], probs = c(0.025,0.975)))
+  
+  print("TC 95% CI:")
+  print(quantile(reps$t[,idx+3], probs = c(0.025,0.975)))
+  
+  print("OR 95% CI:")
+  print(quantile(reps$t[,idx+2], probs = c(0.025,0.975)))
+    
+  print("ND 95% CI:")
+  print(quantile(reps$t[,idx+1], probs = c(0.025,0.975)))
+  
+  print("AC vs ND")
+  print(quantile(reps$t[, idx] - reps$t[,idx+1], probs = c(0.025, 0.5, 0.975)))
+  print(paste("p =", mean(reps$t[,idx] < reps$t[,idx+1])))
+  
+  print("AC vs OR")
+  print(quantile(reps$t[,idx] - reps$t[,idx+2], probs = c(0.025, 0.5, 0.975)))
+  print(paste("p =", mean(reps$t[,idx] < reps$t[,idx+2])))
+  
+  print("AC vs TC")
+  print(quantile(reps$t[,idx] - reps$t[,idx+3], probs = c(0.025, 0.5, 0.975)))
+  print(paste("p =", mean(reps$t[,idx] < reps$t[,idx+3])))
+}
+
+
+fig_load_bins <- all_fits %>%
+  ggplot(aes(x = as.integer(att_lvl), y = r.squared, color = model)) + 
+geom_line(size=1.0) + 
+scale_color_manual(values = c("ac" = "#5aa67b",
+                              "tc" = "darkgrey",
+                              "nd" = "lightgrey",
+                              "or" = "grey"))
+
+
+fig_load_bins
+
+# ggsave("../figures/load_bins.svg", fig_load_bins,
+#        width = 400, height = 300, units = "mm")
+
+
+
+
+```
+
+Load binning the combination models
+
+
+```{r, warning=FALSE}
+
+bin_by_load <- function (data) {
+  nested_by_att <- data %>%
+    mutate(att_lvl = cut_number(total_cycles, n = 3)) %>%
+    group_by(att_lvl) %>%
+    nest()
+  
+  ac_fits <- nested_by_att %>%
+    mutate(fit = map(data, ~ lm(hr ~ a3_centroid, data = .x)),
+           smry = map(fit, ~ summary(.x)),
+           r.squared =  map_dbl(smry, ~ .x[["r.squared"]]),
+           p.val = map_dbl(fit,~ glance(.x)[["p.value"]]),
+           model = "ac") %>%
+    select(-c(data, fit, smry))
+  
+  
+  nd_fits <- nested_by_att %>%
+    mutate(fit = map(data, ~ lm(hr ~ geo_centroid + dist_to_nd, data = .x)),
+           smry = map(fit, ~ summary(.x)),
+           r.squared =  map_dbl(smry, ~ .x[["r.squared"]]),
+           p.val = map_dbl(fit,~ glance(.x)[["p.value"]]),
+           model = "nd") %>%
+    select(-c(data, fit, smry))
+  
+
+  dc_fits <- nested_by_att %>%
+    mutate(fit = map(data, ~ lm(hr ~ geo_centroid + dis_center,
+                                data = .x)),
+           smry = map(fit, ~ summary(.x)),
+           r.squared =  map_dbl(smry, ~ .x[["r.squared"]]),
+           p.val = map_dbl(fit,~ glance(.x)[["p.value"]]),
+           model = "dc") %>%
+    select(-c(data, fit, smry))
+  
+  
+  or_fits <- nested_by_att %>%
+    mutate(fit = map(data, ~ lm(hr ~ geo_centroid + dist_to_center,
+                                data = .x)),
+           smry = map(fit, ~ summary(.x)),
+           r.squared =  map_dbl(smry, ~ .x[["r.squared"]]),
+           p.val = map_dbl(fit,~ glance(.x)[["p.value"]]),
+           model = "or") %>%
+    select(-c(data, fit, smry)) 
+
+  all_fits <- bind_rows(list(ac_fits,
+                             nd_fits,
+                             or_fits,
+                             dc_fits)) %>%
+    unnest() %>%
+    arrange(att_lvl, model)
+  
+  return (all_fits)
+}
+
+
+univariate_test <- function(data, indices) {
+  d = data[indices,] # sample trials with replacement 
+  
+  result <- bin_by_load(d)
+  
+  return(result$r.squared) #return explained variance
+}
+
+reps <- boot(data=probe_exp_df,
+             statistic=univariate_test,
+             R=10000,
+           ncpus = 4,
+             parallel = "multicore")
+
+
+all_fits = bin_by_load(probe_exp_df)
+load_levels = levels(all_fits$att_lvl)
+nlevels = length(load_levels)
+lows = c(nlevels * 4)
+highs = c(nlevels * 4)
+sds = c(nlevels * 4)
+for (i in 1:nlevels) {
+  print(sprintf("Level %d, range: %s", i, load_levels[i]))
+  idx = (i-1) * 4 + 1
+  
+  print("AC 95% CI:")
+  print(quantile(reps$t[,idx], probs = c(0.025,0.975)))
+  
+  print("TC + ND 95% CI:")
+  print(quantile(reps$t[,idx+1], probs = c(0.025,0.975)))
+  
+  print("TC + OR 95% CI:")
+  print(quantile(reps$t[,idx+2], probs = c(0.025,0.975)))
+  
+  print("TC + DC 95% CI:")
+  print(quantile(reps$t[,idx+3], probs = c(0.025,0.975)))
+  
+  print("AC vs TC + ND")
+  print(quantile(reps$t[, idx] - reps$t[,idx+1], probs = c(0.025, 0.5, 0.975)))
+  print(paste("p =", mean(reps$t[,idx] < reps$t[,idx+1])))
+  
+  print("AC vs TC + OR")
+  print(quantile(reps$t[,idx] - reps$t[,idx+2], probs = c(0.025, 0.5, 0.975)))
+  print(paste("p =", mean(reps$t[,idx] < reps$t[,idx+2])))
+  
+  print("AC vs TC + DC")
+  print(quantile(reps$t[,idx] - reps$t[,idx+3], probs = c(0.025, 0.5, 0.975)))
+  print(paste("p =", mean(reps$t[,idx] < reps$t[,idx+3])))
+}
+
+```
+
+
+### Time binning probe detection rates
+
+
+```{r}
+probe_exp_df %>%
+  group_by(epoch) %>%
+  summarise(mean(hr))
+
+probe_exp_df %>%
+  ggplot(aes(x = frame, y = hr)) +
+  geom_point()
+
+probe_exp_df %>%
+  with(lm(hr ~ frame)) %>%
+  summary()
+
+probe_exp_df %>%
+  with(aov(hr ~ epoch)) %>%
+  summary()
+
+probe_exp_df %>%
+  with(lm(hr ~ td)) %>%
+  summary()
+
+```
+
+### Subject split-half correlation
+
+
+Computing subject split half correlation (r-squared) to define upper
+threshold of explainable variance by each model.
+
+```{r  split half correlation}
+subj_data_nested <- good_subjects_data %>%
+  ungroup() %>%
+  # sorting out probed tracker
+  pivot_longer(cols = starts_with("probe_"),
+               names_to = "probed_tracker_epoch",
+               values_to = "tracker") %>%
+  separate(probed_tracker_epoch, c(NA, NA, "probed_tracker_epoch")) %>%
+  mutate(probed_tracker_epoch = as.numeric(probed_tracker_epoch)) %>%
+  group_by(ID, scene, probe, epoch, probed_tracker_epoch, tracker) %>%
+  filter(probed_tracker_epoch == epoch, hit | fp) %>%
+  ungroup() %>%
+  select(ID, scene, epoch, probe, tracker, probed_tracker_epoch, hit) %>%
+  nest_by(ID)
+
+group_perf <- function(group, gname) {
+  k = nrow(group)
+  d <- group %>%
+    unnest(cols = c(ID, data)) %>%
+    group_by(scene, epoch, probe, tracker) %>%
+    summarise(hr = sum(hit) / k,
+              .groups = "keep",) %>%
+    ungroup %>%
+    mutate(frame = probe)
+  
+  result <- probe_timings %>%
+    select(scene, frame) %>%
+    left_join(d, by = c("scene", "frame")) %>%
+    mutate(hr = ifelse(is.na(hr), 0, hr)) %>%
+    select(scene, frame, hr) %>%
+    mutate(g = gname)
+
+  return(result)
+}
+
+split_half_cor <- function(data, indices) {
+  d <- data.frame(data)
+  nr = length(indices)
+  groups <- split(indices, 
+                  cut(seq_along(indices), 2, labels = FALSE))
+  gai = groups[[1]]
+  gbi = groups[[2]]
+  group_a <- group_perf(d[gai,], "a")
+  group_b <- group_perf(d[gbi,], "b")
+  df <- rbind(group_a, group_b) %>%
+    pivot_wider(names_from = g,
+                values_from = hr)
+  fit <- df %>% with(lm(a ~ b)) %>% summary
+  return (fit$r.square)
+}
+reps <- boot(data = subj_data_nested, 
+             statistic=split_half_cor,
+             sim = "ordinary",
+             R=5000,
+             ncpus = 8,
+             parallel = "multicore",
+             )
+shc_plot <- plot(reps)
+shc_probe_hr_ci <- boot.ci(reps, type="all")
+shc_probe_hr_ci
+shc_probe_hr_ci$mu <- mean(reps$t)
+```
+
+
 ### Target designation
 
 ```{r}
-
-td_by_scene_tracker <- td_by_subj_tracker %>%
-  group_by(scene, tracker) %>%
-  summarise(td = mean(td))
-
-td_by_scene <- td_by_subj_scene %>%
+td_by_scene <- subject_performance %>%
+  filter(passed) %>%
+  select(ID) %>%
+  left_join(td_by_subj_scene) %>%
   group_by(scene) %>%
-  summarise(td_human = mean(td),
-            td_human_sd = sd(td))
-
-
-# human and model average performance
-td_by_scene %>%
-  summarise(td_human = mean(td_human),
-            td_model = mean(td_model))
-
-td_by_scene <- model_perf %>%
-  rename(td_model = td) %>%
-  left_join(td_by_scene, by = "scene")
-
-td_lr <- td_by_scene %>%
-with(lm(td_human ~ td_model))
-
-td_by_scene$td_human_res = td_lr$residuals
-td_by_scene <- td_by_scene %>%
-  mutate(abs_res = abs(td_human_res))
-
-td_lr %>% summary()
+  summarise(td_human = mean(td)) %>%
+  left_join(model_perf) %>%
+  rename(td_model = td)
 
 td_by_scene %>%
-ggplot(aes(x = td_model, y = td_human, label = scene)) +
+  ggplot(aes(x = td_model, y = td_human, label = scene)) +
   geom_point() + 
   geom_text()
+
+td_by_scene %>%
+  with(lm(td_human ~ td_model)) %>%
+  summary()
 ```
 
 ```{r  split half correlation}

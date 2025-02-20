@@ -36,12 +36,12 @@ load data (subject, exp, scenes)
 
 ```{r echo=FALSE, results='hide'}
 
-model_att <- read_csv("../data/accuracy/exp3_staircase_ac_td_att.csv") %>%
+model_att <- read_csv("../data/accuracy/exp_staircase_ac_td_att.csv") %>%
   group_by(chain, ntargets, vel) %>%
   summarise(total_cycles = sum(cycles),
-            avg_cycles = mean(cycles))
+          avg_cycles = mean(cycles))
 
-model_perf <- read_csv("../data/accuracy/exp3_staircase_ac_td_perf.csv") %>%
+model_perf <- read_csv("../data/accuracy/exp_staircase_ac_td_perf.csv") %>%
   # avg across tracker id
   group_by(chain, ntargets, vel) %>%
   summarise(td_avg = mean(td_acc),
@@ -131,10 +131,10 @@ fig4_a2 <- staircase_df %>%
   ggtitle("Perceptual computations across target count")
 
 
-ggsave("~/project/figures/fig4_a1.svg", plot=fig4_a1,
-     height = 3, width = 4)
-ggsave("~/project/figures/fig4_a2.svg", plot=fig4_a2,
-     height = 3, width = 4)
+ggsave("~/project/figures/exp3_speed_thresh.svg", plot=fig4_a1,
+   height = 3, width = 4)
+ggsave("~/project/figures/exp3_speed_load.svg", plot=fig4_a2,
+   height = 3, width = 4)
 
 fig4_a1
 fig4_a2
