@@ -11,7 +11,8 @@ min_sensitivity = -60000
 
 process_chains <- function(probe_path,
                            att_path,
-                           dnd_path) {
+                           dnd_path,
+                           dcent_path) {
   
   ############################## load raw data #################################
   
@@ -33,6 +34,10 @@ process_chains <- function(probe_path,
   dnd_predictions <- read_csv(dnd_path) %>%
     select(scene, frame, d_ic) %>%
     rename(dist_to_nd = d_ic)
+  
+  dis_center <- read_csv(dcent_path) %>%
+    select(scene, frame, dcx, dcy)
+  
   
   ############################ smoothing kernel#################################
   
@@ -113,16 +118,19 @@ process_chains <- function(probe_path,
     ) %>%
     select(c(chain, scene, epoch, tracker, importance_weighted))
   
+  
   # add distance to weighted and unweighted tracker means
   result <- smoothed_df %>%
     # filter(tracker <= 4) %>%
     left_join(centroids, by = c("chain", "scene", "frame")) %>%
+    left_join(dis_center, by = c("scene", "frame")) %>%
     left_join(importance_weighted, by = c("chain", "scene", "epoch", "tracker")) %>%
     # Compute measures for AC-centroid, Target center, and ECC
     mutate(
       a3_centroid = sqrt((tot_att_x - pred_x)^2 + (tot_att_y - pred_y)^2),
       geo_centroid = sqrt((tot_x - pred_x)^2 + (tot_y - pred_y)^2),
       dist_to_center = sqrt(pred_x_smoothed^2 + pred_y_smoothed^2),
+      dis_center = sqrt((dcx - pred_x)^2 + (dcy - pred_y)^2)
     ) %>%
     group_by(scene, frame, tracker, probed_tracker, epoch) %>%
     # average across chains

@@ -56,9 +56,10 @@ probe_timings <- read_csv("../data/probes/random_probe_timings.csv") %>%
 
 
 
-# exp_data = process_chains("../data/probes/random_probe_timings.csv",
-#                           "../data/probes/exp_probes_ac_td_att.csv",
-#                           "../data/probes/exp_probes_ac_td_dnd_centroid.csv")
+exp_data = process_chains("../data/probes/random_probe_timings.csv",
+                          "../data/probes/exp_probes_ac_td_att.csv",
+                          "../data/probes/exp_probes_ac_td_dnd_centroid.csv",
+                          "../data/probes/exp_probes_dis_cov.csv")
 
 # covariates pre-processed by `scripts/exp1_attention_process_chains.R`
 # exp_data <- read_csv("../data/probes/model_probe_covariates_revision.csv")
@@ -255,7 +256,7 @@ fig_lc_rq <- load_gs %>%
   geom_tile() +
   guides(fill = guide_legend(title = "R2")) +
   xlab("Intercept (x0)") + 
-ylab("Slope (m)") +
+  ylab("Slope (m)") +
   ggtitle("Model fit (probes)")
 
 fig_lc_ld <- load_gs %>%
@@ -278,12 +279,12 @@ fig_lc_rq
 fig_lc_ld
 fig_lc_pf
 
-ggsave("../figures/gs-lc-rq.svg", fig_lc_rq,
-     width = 4, height = 2.5)
-ggsave("../figures/gs-lc-ld.svg", fig_lc_ld,
-     width = 4, height = 2.5)
-ggsave("../figures/gs-lc-pf.svg", fig_lc_pf,
-     width = 4, height = 2.5)
+# ggsave("../figures/gs-lc-rq.svg", fig_lc_rq,
+#      width = 4, height = 2.5)
+# ggsave("../figures/gs-lc-ld.svg", fig_lc_ld,
+#      width = 4, height = 2.5)
+# ggsave("../figures/gs-lc-pf.svg", fig_lc_pf,
+#      width = 4, height = 2.5)
 
 
 ```
@@ -319,11 +320,11 @@ fig_im_rq
 fig_im_ld
 fig_im_pf
 
-ggsave("../figures/gs-im-rq.svg", fig_im_rq,
-     width = 4, height = 2.5)
-ggsave("../figures/gs-im-ld.svg", fig_im_ld,
-     width = 4, height = 2.5)
-ggsave("../figures/gs-im-pf.svg", fig_im_pf,
-     width = 4, height = 2.5)
+# ggsave("../figures/gs-im-rq.svg", fig_im_rq,
+#      width = 4, height = 2.5)
+# ggsave("../figures/gs-im-ld.svg", fig_im_ld,
+#      width = 4, height = 2.5)
+# ggsave("../figures/gs-im-pf.svg", fig_im_pf,
+#      width = 4, height = 2.5)
 ```
 

@@ -39,11 +39,11 @@ theme_set(th)
 subject_data <- read_csv("../data/effort/exp1_difficulty_parsed_trials.csv") %>%
   select(-c(WID)) %>%
   replace_na(list(response_frame = Inf)) %>%
-group_by(ID) %>%
+  group_by(ID) %>%
   mutate(effort = scale(difficulty))
 
 exp_design <- subject_data %>%
-group_by(scene) %>%
+  group_by(scene) %>%
   summarise(across(c(vel, n_dist), first))
 
 model_att <- read_csv("../data/effort/exp_effort_ac_td_att.csv")
@@ -690,5 +690,22 @@ fig_perfect_trials <- perfect_trials %>%
         axis.title = element_blank())
         
 fig_perfect_trials
+
+set.seed(0)
+
+univariate_effort <- function(data, indices) {
+  d = data[indices,] # sample trials with replacement 
+  load_fit <- d %>% with(lm(effort ~ arousal)) %>% summary
+  return(load_fit$r.squared) #return explained variance
+}
+
+reps <- boot(data=perfect_trials, 
+             statistic=univariate_effort,
+             R=10000, 
+             ncpus = 8,
+             parallel = "multicore")
+plot(reps)
+# CIs
+boot.ci(reps, type="perc")
 ```
 
