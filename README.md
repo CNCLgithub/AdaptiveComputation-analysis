@@ -1,6 +1,15 @@
 # Adaptive computation Analysis Repo
 
-Collection of analysis scripts used in "Adaptive computation as a new mechanism of human attention"
+Collection of analysis scripts used in "Adaptive computation as a new mechanism of dynamic human attention"
+
+```bib
+@article{Belledonne_Butkus_Scholl_Yildirim,
+title={Adaptive computation as a new mechanism of dynamic human attention},
+author={Belledonne, Mario and Butkus, Eivinas and Scholl, Brian J. and Yildirim, Ilker},
+journal={Psychological Review},
+year={2025}
+} 
+```
 
 ## Replication
 
