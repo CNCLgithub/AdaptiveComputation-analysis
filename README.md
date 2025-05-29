@@ -1,6 +1,6 @@
-# MOT Analysis
+# Adaptive computation Analysis Repo
 
-Collection of analysis scripts used for the journal submission of adaptive computation.
+Collection of analysis scripts used in "Adaptive computation as a new mechanism of human attention"
 
 ## Replication
 
